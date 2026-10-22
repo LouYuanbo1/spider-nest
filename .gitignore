@@ -31,3 +31,7 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# 本地运行数据（含登录态/对话记录/浏览器 Cookie，切勿提交）
+user_data/
+config/config.yaml

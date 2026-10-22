@@ -1,0 +1,22 @@
+spider:
+  user_data_dir: user_data/browser
+  user_mode: true
+  headless: false
+  incognito: false
+  disable_dev_shm_usage: true
+  no_sandbox: true
+  default_page_width: 1920
+  default_page_height: 1080
+  leakless: true
+  bin: C:/Program Files/Google/Chrome/Application/chrome.exe
+  disable_background_networking: false
+  disable_background_timer_throttling: true
+  disable_backgrounding_occluded_windows: true
+  disable_renderer_backgrounding: true
+  basic_remote_debugging_port: 9222
+  trace: false
+  humanize: true
+  operation_timeout: 30s
+  page_pool_limit: 3
+model:
+  api_key: your_api_key
