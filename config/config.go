@@ -2,11 +2,30 @@ package config
 
 import "time"
 
-type SpiderConfig struct {
-	Humanize         bool          `yaml:"humanize"`
-	OperationTimeout time.Duration `yaml:"operation_timeout"`
-	PagePoolLimit    int           `yaml:"page_pool_limit"`
-	RodConfig
+// HijackHandlerType 预设的 hijack handler 行为，通过 yaml 的 handler 字段显式选择。
+//   - monitor：真实监听，全量采集请求方法/URL/请求头/请求体并放行到真实网络；
+//   - echo：把命中请求的方法/URL/query 回喂成 JSON 假响应；
+//
+// 注意：handler 必填、无默认值。真实爬取常有数据处理，隐式默认"只监听"会掩盖规则
+// 真实意图，故缺省一律报错，要求每条规则明确自己要做什么。
+// 更自由的逻辑请直接在代码里用 spider.WithHijack + 手写 HijackHandler。
+type HijackHandlerType string
+
+const (
+	HijackHandlerMonitor HijackHandlerType = "monitor" // 真实监听，全量采集后放行
+	HijackHandlerEcho    HijackHandlerType = "echo"    // 回喂 echo JSON
+)
+
+// HijackConfig 一条声明式的 hijack 规则，对应 spider/hijack.HijackRule。
+// 行为由 Handler 字段选择（见 HijackHandlerType），命中后交给对应 handler 处理；
+// 各 handler 的专属参数放在同名 YAML 子节点（目前 monitor 无需参数）。
+type HijackConfig struct {
+	Name    string `yaml:"name"`    // 规则名，仅用于可读性/日志
+	Pattern string `yaml:"pattern"` // URL 匹配模式，如 "*/api/user*"（go-rod 通配语法，* 不跨 /）
+	Method  string `yaml:"method"`  // 可选；只对该 HTTP 方法生效，空表示全部
+
+	// Handler 选择预设行为（见 HijackHandlerType），必填且无默认值：缺省会报错。
+	Handler HijackHandlerType `yaml:"handler"`
 }
 
 type RodConfig struct {
@@ -35,6 +54,20 @@ type RodConfig struct {
 	//(开启CDP通信追踪)
 	Trace bool `yaml:"trace"`
 }
+
+type SpiderConfig struct {
+	RodConfig        `yaml:",inline"`
+	Humanize         bool          `yaml:"humanize"`
+	OperationTimeout time.Duration `yaml:"operation_timeout"`
+	PagePoolLimit    int           `yaml:"page_pool_limit"`
+}
+
+/*
+type SpiderConfig struct {
+	Hijack        []HijackConfig `yaml:"hijack"`
+	BrowserConfig `yaml:",inline"`
+}
+*/
 
 type ModelConfig struct {
 	APIKey string `yaml:"api_key"`

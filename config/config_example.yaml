@@ -18,5 +18,19 @@ spider:
   humanize: true
   operation_timeout: 30s
   page_pool_limit: 3
+  # 接口拦截：命中 pattern 的请求交给对应 handler 处理（monitor 全量采集请求头/体后放行，echo 回喂假 JSON）
+  hijack:
+    - name: observe-login
+      pattern: "*/api/login*"
+      method: POST
+      handler: monitor              # 真实监听：全量采集请求方法/URL/请求头/请求体后放行
+    - name: observe-list
+      pattern: "https://example.com/api/users*"
+      method: GET                # 同上，仅记录后放行
+      handler: monitor           # 必填：每条约规则须显式声明 handler，无默认
+    - name: fake-echo
+      pattern: "*/api/echo*"
+      method: GET
+      handler: echo           # 预设行为之一：回喂 echo JSON 假响应（详见 config.HijackHandlerType）
 model:
   api_key: your_api_key

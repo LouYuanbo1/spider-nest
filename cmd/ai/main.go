@@ -49,7 +49,7 @@ func main() {
 		return
 	}
 
-	sipder, err := spider.NewSpider(appcfg.Spider)
+	sipder, err := spider.NewWeaver(appcfg.Spider)
 	if err != nil {
 		fmt.Printf("Error creating spider: %v", err)
 		return
