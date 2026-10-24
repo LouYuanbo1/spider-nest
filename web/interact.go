@@ -45,6 +45,10 @@ func (w *Web) GetInteractives(ctx context.Context) (string, error) {
 		return "", err
 	}
 
+	// 一次性批量拉取锚点 href 映射，避免对每个链接单独发一次
+	// DOM.describeNode —— 200 个链接原本需 200 次串行 CDP 往返。
+	hrefs := anchorHrefs(p)
+
 	var interactives Interactives
 	for _, node := range result.Nodes {
 		// 过滤掉无可访问性名、以及没有对应 DOM 节点(无法用于交互/location)的节点
@@ -56,7 +60,7 @@ func (w *Web) GetInteractives(ctx context.Context) (string, error) {
 		case "link":
 			interactives.Links = append(interactives.Links, Link{
 				Name:   node.Name.Value.String(),
-				Href:   resolveHref(p, node.BackendDOMNodeID),
+				Href:   hrefs[node.BackendDOMNodeID],
 				NodeID: int64(node.BackendDOMNodeID),
 			})
 		case "button":
@@ -89,31 +93,56 @@ func (w *Web) GetInteractives(ctx context.Context) (string, error) {
 	return string(data), nil
 }
 
-// resolveHref 通过 DOM 节点读取 href 属性，并补全协议相对地址
-func resolveHref(p *rod.Page, backendNodeID proto.DOMBackendNodeID) string {
-	href, err := attrOfNode(p, backendNodeID, "href")
+// anchorHrefs 批量拉取整棵 DOM，收集所有 <a> 节点的 BackendNodeID→href。
+// 相比逐链接调用 attrOfNode（每次一次 DOM.describeNode），整棵 DOM 只需
+// 一次 CDP 往返即可拿到全部锚点，彻底消除 N 个链接 = N 次串行往返的问题。
+func anchorHrefs(p *rod.Page) map[proto.DOMBackendNodeID]string {
+	hrefs := make(map[proto.DOMBackendNodeID]string)
+
+	depth := -1 // 拉取整棵子树
+	res, err := proto.DOMGetFlattenedDocument{Depth: &depth, Pierce: true}.Call(p)
 	if err != nil {
-		return ""
-	}
-	// 协议相对地址 (//host/path) 补成绝对地址
-	if strings.HasPrefix(href, "//") {
-		href = "https:" + href
-	}
-	return href
-}
-
-// attrOfNode 从 DOM 节点中按属性名取值。Attributes 是扁平数组: [名称1, 值1, 名称2, 值2, ...]
-func attrOfNode(p *rod.Page, backendNodeID proto.DOMBackendNodeID, want string) (string, error) {
-	res, err := proto.DOMDescribeNode{BackendNodeID: backendNodeID}.Call(p)
-	if err != nil || res.Node == nil {
-		return "", err
+		return hrefs
 	}
 
-	attrs := res.Node.Attributes
-	for i := 0; i+1 < len(attrs); i += 2 {
-		if attrs[i] == want {
-			return attrs[i+1], nil
+	var walk func(ns []*proto.DOMNode)
+	walk = func(ns []*proto.DOMNode) {
+		for _, n := range ns {
+			if n == nil {
+				continue
+			}
+			// 锚点节点；Attributes 是扁平数组 [名称1, 值1, 名称2, 值2, ...]
+			if n.NodeName == "A" || n.NodeName == "a" {
+				attrs := n.Attributes
+				for i := 0; i+1 < len(attrs); i += 2 {
+					if attrs[i] == "href" {
+						hrefs[n.BackendNodeID] = normalizeHref(attrs[i+1])
+						break
+					}
+				}
+			}
+			if len(n.Children) > 0 {
+				walk(n.Children)
+			}
+			if len(n.ShadowRoots) > 0 {
+				walk(n.ShadowRoots)
+			}
+			if n.ContentDocument != nil {
+				walk([]*proto.DOMNode{n.ContentDocument})
+			}
+			if n.TemplateContent != nil {
+				walk([]*proto.DOMNode{n.TemplateContent})
+			}
 		}
 	}
-	return "", nil
+	walk(res.Nodes)
+	return hrefs
+}
+
+// normalizeHref 规范化 href：协议相对地址 (//host/path) 补成绝对地址。
+func normalizeHref(href string) string {
+	if strings.HasPrefix(href, "//") {
+		return "https:" + href
+	}
+	return href
 }

@@ -26,26 +26,18 @@ func (t Target) method() string {
 	return t.Method
 }
 
-// Acquirer 负责"从浏览器这头弄到一套新鲜请求头"。每次调用都应触发一次真实请求，
-// 以便拿到此刻仍有效的 cookie / 反爬签名等，再交给直连复用。
-// 实现通常借助 rod 劫持（hijack）监听并捕获匹配请求的请求头快照。
-type Acquirer interface {
-	// Acquire 触发一次真实请求并返回匹配请求的请求头快照。
-	Acquire(ctx context.Context, t Target) (*hijack.RequestCapture, error)
-}
-
 // Client 带失效回退的直连蜘蛛（核心状态机）：
 //
 //  1. 优先缓存身上"最后一次有效"的请求头，走纯 HTTP 直连 —— 快、不占用浏览器；
 //  2. 直连失败，或状态码命中刷新策略（默认 403/429，即疑似被反爬拦），
-//     回退借用 Acquirer（一般基于 rod）重新偷一套新头，再直连重试；
+//     回退借用 HeaderSource（一般基于 rod）重新偷一套新头，再直连重试；
 //  3. 超过 MaxRetries 仍失败则返回最后一次错误。
 //
-// 本组件与浏览器世界彻底解耦：只会依赖注入进来的 Acquirer 与 Fetcher，
-// 不含任何 rod 依赖，方便用假 Acquirer 独立测试整段回退逻辑。
+// 本组件与浏览器世界彻底解耦：只会依赖注入进来的 HeaderSource 与 Fetcher，
+// 不含任何 rod 依赖，方便用假 HeaderSource 独立测试整段回退逻辑。
 type Client struct {
 	fetcher *Fetcher
-	acquire Acquirer
+	source  HeaderSource
 
 	mu     sync.Mutex
 	cached map[string]*hijack.RequestCapture // 按 URL 记忆"最后有效"的请求头快照
@@ -83,12 +75,12 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// New 创建带失效回退的直连蜘蛛。fetcher 为纯 HTTP 直连引擎；acquire 为"偷新头"来源
+// New 创建带失效回退的直连蜘蛛。fetcher 为纯 HTTP 直连引擎；source 为"偷新头"来源
 // （nil 则只允许使用 Seed 预先注入的头，失去回退能力）。
-func New(fetcher *Fetcher, acquire Acquirer, opts ...Option) *Client {
+func New(fetcher *Fetcher, source HeaderSource, opts ...Option) *Client {
 	c := &Client{
 		fetcher:    fetcher,
-		acquire:    acquire,
+		source:     source,
 		cached:     make(map[string]*hijack.RequestCapture),
 		maxRetries: 0,
 		refreshSet: map[int]struct{}{403: {}, 429: {}},
@@ -148,7 +140,7 @@ func (c *Client) invalidate(t Target) {
 }
 
 // Fetch 返回一次成功的 *http.Response（调用方负责关闭 Body）。
-// 命中缓存头则直连；失败时进入 fallback，借 Acquirer 偷新头重试，直到 MaxRetries 用尽。
+// 命中缓存头则直连；失败时进入 fallback，借 HeaderSource 偷新头重试，直到 MaxRetries 用尽。
 func (c *Client) Fetch(ctx context.Context, t Target) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -158,7 +150,7 @@ func (c *Client) Fetch(ctx context.Context, t Target) (*http.Response, error) {
 
 		cap := c.current(t)
 		if cap == nil {
-			got, err := c.safeAcquire(ctx, t)
+			got, err := c.safeCapture(ctx, t)
 			if err != nil {
 				lastErr = err
 			} else {
@@ -168,7 +160,7 @@ func (c *Client) Fetch(ctx context.Context, t Target) (*http.Response, error) {
 		}
 
 		if cap != nil {
-			resp, err := c.fetcher.Fetch(cap)
+			resp, err := c.fetcher.Send(ctx, cap)
 			if err == nil && !c.isRefreshStatus(resp.StatusCode) {
 				return resp, nil
 			}
@@ -196,18 +188,18 @@ func (c *Client) Fetch(ctx context.Context, t Target) (*http.Response, error) {
 	}
 }
 
-// Fresh 强制从 Acquirer 重新偷一套头后再直连（无视缓存）。用于调用方确认当前头已过期、
+// Fresh 强制从 HeaderSource 重新偷一套头后再直连（无视缓存）。用于调用方确认当前头已过期、
 // 想直接走一遍完整回退的场景。
 func (c *Client) Fresh(ctx context.Context, t Target) (*http.Response, error) {
 	c.Clear(t.URL)
 	return c.Fetch(ctx, t)
 }
 
-func (c *Client) safeAcquire(ctx context.Context, t Target) (*hijack.RequestCapture, error) {
-	if c.acquire == nil {
-		return nil, errors.New("未配置 Acquirer 且缓存中无可用请求头")
+func (c *Client) safeCapture(ctx context.Context, t Target) (*hijack.RequestCapture, error) {
+	if c.source == nil {
+		return nil, errors.New("未配置 HeaderSource 且缓存中无可用请求头")
 	}
-	return c.acquire.Acquire(ctx, t)
+	return c.source.Capture(ctx, t)
 }
 
 func (c *Client) isRefreshStatus(code int) bool {

@@ -172,6 +172,10 @@ func loadSession[M adk.MessageType](filePath string) (*Session[M], error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	// 单条消息可能携带超大的工具结果，默认 64KB 单行上限会因
+	// bufio.ErrTooLong 让整个会话文件从此无法打开（#9）。
+	// 这里把初始缓冲提到 256KB、单行上限放宽到 64MB。
+	scanner.Buffer(make([]byte, 256*1024), 64*1024*1024)
 
 	// First line: header
 	if !scanner.Scan() {

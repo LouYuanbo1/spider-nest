@@ -41,8 +41,14 @@ func WithTransport(t *http.Transport) FetcherOption {
 }
 
 // WithTimeout 设置单次直连的超时；<=0 表示不主动加超时（依赖上游上下文）。
+// 该超时落在内部 http.Client.Timeout 上，覆盖"连接 + 读响应体"全程（见 Do）。
 func WithTimeout(d time.Duration) FetcherOption {
-	return func(c *Fetcher) { c.timeout = d }
+	return func(c *Fetcher) {
+		c.timeout = d
+		if d > 0 {
+			c.client.Timeout = d
+		}
+	}
 }
 
 // WithRetries 设置出错后的重试次数（默认 0，即不重试）。
@@ -76,7 +82,8 @@ func (c *Fetcher) HTTPClient() *http.Client { return c.client }
 
 // Request 把浏览器捕获的请求快照翻译成一个标准的 *http.Request。
 // 方法 / URL / 请求头 / 请求体（字符串形式）原样搬移；body 为空则无请求体。
-func (c *Fetcher) Request(cap *hijack.RequestCapture) (*http.Request, error) {
+// ctx 会透传到请求级 Context，供上游取消/超时贯穿直连全程。
+func (c *Fetcher) Request(ctx context.Context, cap *hijack.RequestCapture) (*http.Request, error) {
 	if cap == nil {
 		return nil, errors.New("RequestCapture 不能为空")
 	}
@@ -84,7 +91,7 @@ func (c *Fetcher) Request(cap *hijack.RequestCapture) (*http.Request, error) {
 	if cap.Body != "" {
 		body = strings.NewReader(cap.Body)
 	}
-	req, err := http.NewRequest(cap.Method, cap.URL, body)
+	req, err := http.NewRequestWithContext(ctx, cap.Method, cap.URL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -95,9 +102,10 @@ func (c *Fetcher) Request(cap *hijack.RequestCapture) (*http.Request, error) {
 	return req, nil
 }
 
-// Fetch 直接把捕获的请求快照翻译并发出，等价于 Request + Do 的便捷组合。
-func (c *Fetcher) Fetch(cap *hijack.RequestCapture) (*http.Response, error) {
-	req, err := c.Request(cap)
+// Send 直接把捕获的请求快照翻译并发出，等价于 Request + Do 的便捷组合。
+// ctx 透传到请求级 Context：上游取消/超时对直连同样生效。
+func (c *Fetcher) Send(ctx context.Context, cap *hijack.RequestCapture) (*http.Response, error) {
+	req, err := c.Request(ctx, cap)
 	if err != nil {
 		return nil, err
 	}
@@ -105,17 +113,14 @@ func (c *Fetcher) Fetch(cap *hijack.RequestCapture) (*http.Response, error) {
 }
 
 // Do 通过内部 *http.Client 的高级 Do 发出请求。出错时按 retries 重试（重试复用
-// 原始请求头，重读一次 body）。超时通过 Context 施加：优先沿用调用方 Context，
-// 其次应用客户端配置的 timeout。
+// 原始请求头，重读一次 body）。请求级 Context 沿用调用方（即上游 ctx），用于取消；
+// 客户端配置的 timeout 落在 http.Client.Timeout 上，覆盖"连接 + 读响应体"全程，
+// 因此 Do 返回后不再手动 cancel——若像旧实现那样在 client.Do 一返回就 cancel，
+// 调用方读 resp.Body 时会撞上 context canceled。
 func (c *Fetcher) Do(req *http.Request) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.retries; attempt++ {
-		ctx := req.Context()
-		var cancel context.CancelFunc
-		if c.timeout > 0 {
-			ctx, cancel = context.WithTimeout(ctx, c.timeout)
-		}
-		clone := req.Clone(ctx)
+		clone := req.Clone(req.Context())
 		// http.NewRequest 对字符串 Reader 已设置 GetBody，重试时据此重建一次 body。
 		if attempt > 0 && req.GetBody != nil {
 			if body, err := req.GetBody(); err == nil {
@@ -123,9 +128,6 @@ func (c *Fetcher) Do(req *http.Request) (*http.Response, error) {
 			}
 		}
 		resp, err := c.client.Do(clone)
-		if cancel != nil {
-			cancel()
-		}
 		if err != nil {
 			lastErr = err
 			if resp != nil {

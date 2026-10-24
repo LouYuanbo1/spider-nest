@@ -250,8 +250,8 @@ for gi, grp := range sp.Results() {
 
 ```go
 fetcher := direct.NewFetcher(direct.WithTimeout(30 * time.Second))
-acq := direct.NewBrowserAcquirer(spiderInstance) // SpiderAPI 即可
-cli := direct.New(fetcher, acq, direct.WithMaxRetries(2))
+src := direct.NewSpiderHeaderSource(spiderInstance) // SpiderAPI 即可
+cli := direct.New(fetcher, src, direct.WithMaxRetries(2))
 resp, err := cli.Fetch(ctx, direct.Target{Method: "GET", URL: "https://api.x.com/res"})
 ```
 
