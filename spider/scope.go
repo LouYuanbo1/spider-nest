@@ -34,14 +34,16 @@ type AcquiredSpider struct {
 
 	started    bool // 已开始提交首个 Go 任务，自此锁定监听不再可增删
 	mounted    bool // 常驻监听已挂载（幂等，只挂一次）
+	mounting   bool // 常驻监听正在挂载中（并发首个 Go 只允许一个真正执行挂载）
 	released   bool // 已归还（幂等，Release 只生效一次）
 	errs       []error
 	rules      []hijack.HijackRule  // 蜘蛛级监听
 	stopHijack func()               // 常驻监听的撤销闭包（nil 表示未挂载）
 	results    [][]web.ActionResult // 各次 Go 的结果组（外层按下标对齐第几次 Go）
 
-	mu sync.Mutex // 保护 errs 与 results（多个并发后台任务共享）
-	wg sync.WaitGroup
+	mu        sync.Mutex // 保护 errs 与 results（多个并发后台任务共享）
+	lifecycle sync.Mutex // 保护生命周期字段（started/mounted/released/stopHijack/rules/ctx）
+	wg        sync.WaitGroup
 }
 
 // NewAcquiredSpider 构造一只已借到手的蜘蛛句柄。rel 为归还回调（可为 nil）。
@@ -61,7 +63,9 @@ func NewAcquiredSpider(sp Spider, rel func() error) *AcquiredSpider {
 // 不改变任何生命周期，只改变动作执行的取消/超时源。返回自身以继续链式调用。
 func (b *AcquiredSpider) WithContext(ctx context.Context) *AcquiredSpider {
 	if ctx != nil {
+		b.lifecycle.Lock()
 		b.ctx = ctx
+		b.lifecycle.Unlock()
 	}
 	return b
 }
@@ -71,16 +75,22 @@ func (b *AcquiredSpider) WithContext(ctx context.Context) *AcquiredSpider {
 // 而非绑定到某一次借出的网页。执行开始后（首个 Go 之后）不可再增删规则，对应
 // go-rod"Run 后不得 Add"的约束，所以声明须发生在首个动作之前。
 func (b *AcquiredSpider) Hijack(cfg ...config.HijackConfig) *AcquiredSpider {
+	b.lifecycle.Lock()
 	if b.started {
+		b.lifecycle.Unlock()
 		b.errorf(errors.New("监听已挂载，执行开始后不可再增删规则"))
 		return b
 	}
+	b.lifecycle.Unlock()
+
 	rules, err := RulesFromConfig(cfg, b.logger)
 	if err != nil {
 		b.errorf(err)
 		return b
 	}
+	b.lifecycle.Lock()
 	b.rules = append(b.rules, rules...)
+	b.lifecycle.Unlock()
 	return b
 }
 
@@ -92,7 +102,11 @@ func (b *AcquiredSpider) Hijack(cfg ...config.HijackConfig) *AcquiredSpider {
 // 数据竞态由内部锁与 WaitGroup 负责：本方法与同一句柄的其它方法可放心并发调用，
 // 但须保证最终调用一次 Release 等待全部后台任务收尾并归还蜘蛛。
 func (b *AcquiredSpider) Go(actions ...web.Action) *AcquiredSpider {
+	b.lifecycle.Lock()
 	b.started = true
+	ctx := b.ctx // 在后台 goroutine 内只读本次捕获的 ctx，避免与 WithContext 竞争
+	b.lifecycle.Unlock()
+
 	if b.sp == nil {
 		b.errorf(errors.New("蜘蛛未成功借出，无法执行"))
 		return b
@@ -108,7 +122,7 @@ func (b *AcquiredSpider) Go(actions ...web.Action) *AcquiredSpider {
 
 	b.wg.Go(func() {
 		err := b.sp.Borrow(func(w *web.Web) error {
-			r, e := w.RunActions(b.ctx, actions)
+			r, e := w.RunActions(ctx, actions)
 			b.mu.Lock()
 			b.results[idx] = r // 按提交序回填，完成先后不影响外层下标
 			b.mu.Unlock()
@@ -151,16 +165,21 @@ func (b *AcquiredSpider) Report(err error) *AcquiredSpider {
 // （幂等，重复调用只返回已有错误，不会再触发归还回调或撤销监听），因此不应再被
 // 用于任何执行。调用前应已把本句柄上所有想跑的动作通过 Go 提交完。
 func (b *AcquiredSpider) Release() error {
+	b.lifecycle.Lock()
 	if b.released {
+		b.lifecycle.Unlock()
 		return b.Err()
 	}
+	b.released = true
+	stop := b.stopHijack
+	b.stopHijack = nil
+	b.lifecycle.Unlock()
+
 	// 先等后台任务全部收尾，确保没有任务仍在借网执行。
 	b.wg.Wait()
 
-	b.released = true
-	if b.stopHijack != nil {
-		b.stopHijack()
-		b.stopHijack = nil
+	if stop != nil {
+		stop()
 	}
 	if b.rel != nil {
 		b.errorf(b.rel())
@@ -175,16 +194,34 @@ func (b *AcquiredSpider) Release() error {
 // 蜘蛛以完整的 Spider 契约持有，EnableHijack 编译期即可直接调用，无需要时
 // 断言探测——能力在构造时已通过接口合并被收编进句柄。
 func (b *AcquiredSpider) mountHijack() {
+	// 快照规则并登记挂载意图；真正的 EnableHijack 在锁外执行，避免持有锁
+	// 期间做阻塞式网络调用，也避免被并发 Hijack 追加规则造成数据竞争。
+	b.lifecycle.Lock()
 	if b.mounted || len(b.rules) == 0 {
+		b.lifecycle.Unlock()
 		return
 	}
-	b.mounted = true
-	stop, err := b.sp.EnableHijack(b.rules)
+	if b.mounting {
+		b.lifecycle.Unlock()
+		return // 已有并发 Go 在挂载，等它完成后本批规则由对方一并挂上
+	}
+	b.mounting = true
+	rules := append([]hijack.HijackRule(nil), b.rules...)
+	b.lifecycle.Unlock()
+
+	stop, err := b.sp.EnableHijack(rules)
 	if err != nil {
 		b.errorf(err)
+		b.lifecycle.Lock()
+		b.mounting = false
+		b.lifecycle.Unlock()
 		return
 	}
+	b.lifecycle.Lock()
+	b.mounted = true
 	b.stopHijack = stop
+	b.mounting = false
+	b.lifecycle.Unlock()
 }
 
 // errorf 累积一个错误（errors.Join 保留全部）。可被并发后台任务与 Release 调用，

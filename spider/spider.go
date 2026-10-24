@@ -28,6 +28,9 @@ import (
 // 日常 API，不必关心"常驻监听"这种需要主动管理撤销时机的重能力。
 type SpiderAPI interface {
 	Acquire() (*web.Web, error)
+	// AcquireCtx 与 Acquire 语义相同，但支持通过 ctx 取消"池满等待"；
+	// 关闭后的蜘蛛也会立即返回 ErrClosed，而非永久阻塞。
+	AcquireCtx(ctx context.Context) (*web.Web, error)
 	Release(w *web.Web) error
 	Borrow(fn func(*web.Web) error) error
 	Crawl(ctx context.Context, actions []web.Action) ([]web.ActionResult, error)
@@ -77,12 +80,19 @@ type Spider interface {
 // 把抓取任务整体委托给 Web 去执行。动作与结果类型统一来自 web 包。
 type Weaver struct {
 	browser   *rod.Browser
-	webs      rod.Pool[web.Web]        // 网池：每张网持有一张页面
+	webs      chan *web.Web            // 网池：桶内以 nil 表示为尚未填实的空槽位
 	create    func() (*web.Web, error) // 创建网的函数
 	logger    *slog.Logger
 	humanize  bool
 	opTimeout time.Duration
+
+	mu     sync.Mutex    // 保护 closed 标志读写
+	closed bool          // 已关闭：关闭后拒绝再派网、归还网直接关页
+	done   chan struct{} // Close 时 close，用于唤醒阻塞中的 AcquireCtx
 }
+
+// ErrClosed 表示蜘蛛（网池）已关闭，拒绝再进行派/收网。
+var ErrClosed = errors.New("spider: 爬虫已关闭")
 
 // Weaver 完整实现 Spider 契约（日常 API + 常驻监听能力），此处锁死在编译期：
 // 若后续 Weaver 的方法集合与 Spider 契约漂移，会在此编译报错，避免带病演进。
@@ -138,8 +148,17 @@ func NewWeaver(cfg *config.SpiderConfig) (*Weaver, error) {
 		logger:    logger,
 		humanize:  cfg.Humanize,
 		opTimeout: cfg.OperationTimeout,
+		done:      make(chan struct{}),
 	}
-	s.webs = rod.NewPool[web.Web](cfg.PagePoolLimit)
+	// 网池预填 PagePoolLimit 个 nil 空槽位：取到空槽才新建，创建失败
+	// 必须归还空槽，否则池容量永久减一（见 Release/AcquireCtx）。
+	if cfg.PagePoolLimit < 1 {
+		cfg.PagePoolLimit = 1
+	}
+	s.webs = make(chan *web.Web, cfg.PagePoolLimit)
+	for i := 0; i < cfg.PagePoolLimit; i++ {
+		s.webs <- nil
+	}
 	s.create = s.createWeb
 
 	return s, nil
@@ -158,26 +177,65 @@ func (s *Weaver) createWeb() (*web.Web, error) {
 	), nil
 }
 
-// Acquire 派一张网：从网池取一张可复用的页面（轻量，封装为 Web），
-// 必要时新建，池满时阻塞等待，直到有网被 Release 放回。
+// AcquireCtx 派一张网：从网池取一张可复用的页面（轻量，封装为 Web），
+// 必要时新建，池满时阻塞等待，直到有网被 Release 放回。等待期间支持
+// 通过 ctx 取消；蜘蛛关闭后立即返回 ErrClosed，而非永久阻塞（#13）。
 // 与 Nest.Acquire（派一只蜘蛛）结构对齐。
-func (s *Weaver) Acquire() (*web.Web, error) {
-	w, err := s.webs.Get(s.create)
-	if err != nil {
-		return nil, fmt.Errorf("从网池取网失败: %v", err)
+func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Web, error) {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, ErrClosed
 	}
-	return w, nil
+
+	select {
+	case slot := <-s.webs:
+		if slot != nil {
+			return slot, nil
+		}
+		// 命中空槽位 → 新建。创建失败必须归还一个空槽位，
+		// 否则该槽被消费后不归还，池容量永久减一（#7）。
+		created, err := s.create()
+		if err != nil {
+			s.webs <- nil
+			return nil, fmt.Errorf("从网池取网失败: %v", err)
+		}
+		return created, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.done:
+		return nil, ErrClosed
+	}
 }
 
-// Release 让一张织完的网回池：把网放回池中供复用，不销毁其页面。
+// Acquire 派一张网：等价于以 Background 上下文调用 AcquireCtx。
+func (s *Weaver) Acquire() (*web.Web, error) {
+	return s.AcquireCtx(context.Background())
+}
+
+// Release 让一张织完的网回池把网放回池中供复用，不销毁其页面。
 // 若网已失效（页面连接关闭导致），则销毁整张网并补建一张新的，
-// 避免劣化实例被反复复用到后续任务上。与 Nest.Release 结构对齐。
+// 避免劣化实例被反复复用到后续任务上。创建失败会归还空槽位避免
+// 池容量泄漏；蜘蛛已关闭时直接关页而非塞回已关闭的池。
 func (s *Weaver) Release(w *web.Web) error {
 	if w == nil {
 		return nil
 	}
-	if w.IsActive() {
-		s.webs.Put(w)
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		// 已关闭：借出的网直接关闭，不再放回（池已被回收）。
+		if w.Page != nil {
+			_ = w.Page.Close()
+		}
+		return ErrClosed
+	}
+	// 仅当执行路径已把网标记为失效（见 RunAction 出错时探活）才重建。
+	// 成功路径只读内存标记，不再每次归还都发 Page.Info 探测（#12）。
+	if !w.Broken() {
+		s.webs <- w
 		return nil
 	}
 	s.logger.Warn("网实例失效，重建中")
@@ -186,9 +244,11 @@ func (s *Weaver) Release(w *web.Web) error {
 	}
 	created, err := s.create()
 	if err != nil {
+		// #7 创建失败也归还空槽位，避免池容量永久减一。
+		s.webs <- nil
 		return err
 	}
-	s.webs.Put(created)
+	s.webs <- created
 	return nil
 }
 
@@ -245,14 +305,29 @@ func (s *Weaver) CrawlConcurrent(
 	return results, errors.Join(errs...)
 }
 
-// Close 关闭爬虫：清理蜘蛛持有的所有网（Web/页面）并释放浏览器资源。
+// Close 关闭爬虫：标记为已关闭、唤醒阻塞中的 Acquire 令其返回
+// ErrClosed，清理池中空闲的网（Web/页面），最后释放浏览器资源。
+// 幂等：重复调用直接返回。
 func (s *Weaver) Close() error {
 	s.logger.Info("关闭爬虫")
-	s.webs.Cleanup(func(w *web.Web) {
-		if w != nil && w.Page != nil {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	close(s.done) // 唤醒所有阻塞中的 AcquireCtx/Acquire
+
+	// 清空池中空闲的网并关闭其页面；借出中的网由其各自的 Release 在
+	// 发现已关闭后自行关页（见 Release）。
+	n := len(s.webs)
+	for i := 0; i < n; i++ {
+		if w := <-s.webs; w != nil && w.Page != nil {
 			_ = w.Page.Close()
 		}
-	})
+	}
+	s.mu.Unlock()
+
 	if s.browser != nil {
 		return s.browser.Close()
 	}

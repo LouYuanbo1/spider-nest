@@ -57,6 +57,7 @@ func NavigateFunc(w *web.Web) func(ctx context.Context, action *web.Navigate) (s
 		cleanURL = strings.Trim(cleanURL, "`")
 		// 再次Trim掉反引号移除后可能残留的空格
 		cleanURL = strings.TrimSpace(cleanURL)
+		action.URL = cleanURL
 		err := w.Navigate(ctx, action)
 		if err != nil {
 			return "", err
@@ -213,7 +214,12 @@ func NewScrollTool(w *web.Web) (tool.InvokableTool, error) {
 func JavaScriptFunc(w *web.Web) func(ctx context.Context, action *web.JavaScript) (string, error) {
 	return func(ctx context.Context, action *web.JavaScript) (string, error) {
 		value, err := w.DoJavaScript(ctx, action)
-		effective := err == nil && value != "" && value != "undefined"
+		if err != nil {
+			// 把 JS 语法/执行报错原文回传，让模型据此修正脚本；
+			// 而不是吞掉错误、只返回 effective:false，导致模型无从下手。
+			return fmt.Sprintf("【javascript 执行失败】%v", err), nil
+		}
+		effective := value != "" && value != "undefined"
 		result := w.ActionResult(ctx, "javascript", value, "", effective)
 		resultJSON, err := json.Marshal(result)
 		if err != nil {

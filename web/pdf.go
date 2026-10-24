@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/johnfercher/maroto/v2/pkg/merge"
 )
 
@@ -68,7 +69,14 @@ func derivePDFName(rawURL string) string {
 
 func (w *Web) pagePDF(ctx context.Context, gp *GetPDF) (string, error) {
 	page := w.Page.Context(ctx)
-	sr, err := page.PDF(gp.PagePrintToPDF)
+	// GetPDF 内嵌 *proto.PagePrintToPDF 可为 nil（&GetPDF{Artifact:...} 构造时未设置）
+	// 直接把 nil 传给 rod 的 Page.PDF 会在其内部解引用 req.TransferMode 而 panic，
+	// 这里兜底分配一个零值请求以走 rod 的默认打印参数。
+	printPdf := gp.PagePrintToPDF
+	if printPdf == nil {
+		printPdf = &proto.PagePrintToPDF{}
+	}
+	sr, err := page.PDF(printPdf)
 	if err != nil {
 		return "", err
 	}

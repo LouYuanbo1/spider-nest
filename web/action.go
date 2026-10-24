@@ -125,6 +125,9 @@ func DefaultContentMode(mode ContentMode) ContentMode {
 	return mode
 }
 
+func (g *GetContent) isAction() {
+}
+
 type GetInteractive struct {
 }
 

@@ -11,36 +11,37 @@ import (
 	"github.com/LouYuanbo1/spider-nest/web"
 )
 
-const defaultAcquireTimeout = 30 * time.Second
+const defaultCaptureTimeout = 30 * time.Second
 
-// BrowserAcquirer 基于基础织网蜘蛛（spider.SpiderAPI 契约）的"请求头获取器"，实现 Acquirer 接口。
-// 借助蜘蛛的浏览器级劫持（hijack）临时监听目标请求，捕获请求头快照后回传，供
-// direct.Client 走纯 HTTP 直连复用（这把浏览器当"头制造机"，造完即撤退）。
+// SpiderHeaderSource 基于基础织网蜘蛛（spider.SpiderAPI 契约）的"请求头来源"，
+// 实现 direct.HeaderSource 接口。借助蜘蛛的浏览器级劫持（hijack）临时监听目标请求，
+// 捕获请求头快照后回传，供 direct.Client 走纯 HTTP 直连复用
+// （把蜘蛛的浏览器当"头制造机"，造完即撤退）。
 //
 // 触发方式：对每条目标"注册劫持规则 -> 借网在页面跑 fetch 触发真实请求 ->
 // 从回调取回请求头 -> 移除规则"，全程在单 goroutine 顺序完成，避免与
 // router 事件循环并发修改 handler（go-rod 的 handler 切片并非并发安全）。
-type BrowserAcquirer struct {
+type SpiderHeaderSource struct {
 	s spider.SpiderAPI
 }
 
-// NewBrowserAcquirer 基于一只已就绪的基础蜘蛛构造头获取器。
-func NewBrowserAcquirer(s spider.SpiderAPI) *BrowserAcquirer {
-	return &BrowserAcquirer{s: s}
+// NewSpiderHeaderSource 基于一只已就绪的基础蜘蛛构造请求头来源。
+func NewSpiderHeaderSource(s spider.SpiderAPI) *SpiderHeaderSource {
+	return &SpiderHeaderSource{s: s}
 }
 
-// Acquire 触发一次真实请求（页面内 fetch 目标 URL），从劫持回调里捕获请求头快照。
+// Capture 触发一次真实请求（页面内 fetch 目标 URL），从劫持回调里捕获请求头快照。
 // 事件循环里的请求头与浏览器真实发出的完全一致（含 cookie/反爬签名等），可直接用于直连。
-func (a *BrowserAcquirer) Acquire(ctx context.Context, t Target) (*hijack.RequestCapture, error) {
+func (hs *SpiderHeaderSource) Capture(ctx context.Context, t Target) (*hijack.RequestCapture, error) {
 	if t.URL == "" {
-		return nil, errors.New("Acquire 目标 URL 不能为空")
+		return nil, errors.New("Capture 目标 URL 不能为空")
 	}
 
 	ch := make(chan *hijack.RequestCapture, 1)
 
 	// 1) 以"借-用-还"为一组，挂起一次性劫持监听：命中目标 URL 且方法一致时
 	//    捕获请求头回传。WithHijack 保证监听 goroutine 只在本次窗口存活、用完即撤。
-	err := a.s.WithHijack([]hijack.HijackRule{{
+	err := hs.s.WithHijack([]hijack.HijackRule{{
 		Pattern: t.URL,
 		Method:  t.method(),
 		Handler: hijack.RequestHandler(func(c *hijack.RequestCapture) {
@@ -65,7 +66,7 @@ func (a *BrowserAcquirer) Acquire(ctx context.Context, t Target) (*hijack.Reques
 	}
 
 	// 3) 等待劫持回调把请求头送回。
-	timeout := time.After(defaultAcquireTimeout)
+	timeout := time.After(defaultCaptureTimeout)
 	select {
 	case cap := <-ch:
 		if cap == nil {
@@ -75,7 +76,7 @@ func (a *BrowserAcquirer) Acquire(ctx context.Context, t Target) (*hijack.Reques
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timeout:
-		return nil, fmt.Errorf("在 %v 内未捕获到目标请求 %s", defaultAcquireTimeout, t.URL)
+		return nil, fmt.Errorf("在 %v 内未捕获到目标请求 %s", defaultCaptureTimeout, t.URL)
 	}
 }
 

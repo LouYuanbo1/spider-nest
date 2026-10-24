@@ -20,6 +20,8 @@ type stubSpider struct {
 
 func (s *stubSpider) Acquire() (*web.Web, error) { return &web.Web{}, nil }
 
+func (s *stubSpider) AcquireCtx(ctx context.Context) (*web.Web, error) { return &web.Web{}, nil }
+
 func (s *stubSpider) Release(*web.Web) error { return nil }
 
 func (s *stubSpider) Borrow(fn func(*web.Web) error) error {

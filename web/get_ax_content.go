@@ -24,8 +24,11 @@ func (w *Web) getAXContent(ctx context.Context, _ *GetAXContent) (string, error)
 	}
 
 	forest := buildAXTree(result.Nodes)
+	// 一次性批量拉取全部锚点 href 映射，避免渲染时对每个链接单独
+	// 发一次 DOM.describeNode（N 链接 = N 次 CDP 往返，见 #11）。
+	hrefs := anchorHrefs(p)
 	return renderAXContent(forest, func(id proto.DOMBackendNodeID) string {
-		return resolveHref(p, id)
+		return hrefs[id]
 	}), nil
 }
 

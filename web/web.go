@@ -16,6 +16,7 @@ type Web struct {
 	Page      *rod.Page
 	humanize  bool
 	opTimeout time.Duration
+	broken    bool // 已标记为失效（执行出错时探活判定），归还时据此销毁重建
 }
 
 // Option 网选项
@@ -45,6 +46,14 @@ func (w *Web) IsActive() bool {
 	_, err := w.Page.Info()
 	return err == nil
 }
+
+// MarkBroken 把这张网标记为失效（页面不可再复用），归还时将被销毁重建。
+// 仅在"实际执行出错且探活确认页面已死"时由 RunAction 调用。
+func (w *Web) MarkBroken() { w.broken = true }
+
+// Broken 报告网是否已被标记失效。纯内存判断，无任何网络往返，
+// 供 Release 在热路径上决定复用还是淘汰，替代原先每次归还都发的 Page.Info。
+func (w *Web) Broken() bool { return w != nil && w.broken }
 
 // New 新建一张网（Web）。网是持有单张页面的轻量单位，页面在其 Page 字段上；
 // Spider 只持有浏览器并把任务委托给网执行；需要在网上设置人类化与超时等
@@ -112,6 +121,18 @@ func (w *Web) RunAction(ctx context.Context, action Action) (ActionResult, error
 	case *GetStructured:
 		value, err = w.GetStructured(ctx)
 		effective = err == nil
+	case *GetContent:
+		switch DefaultContentMode(a.Mode) {
+		case ContentModeStructured:
+			value, err = w.GetStructured(ctx)
+		case ContentModeFull:
+			value, err = w.GetHTML(ctx)
+		case ContentModeAX:
+			value, err = w.GetAXContent(ctx)
+		default:
+			err = fmt.Errorf("未知的 mode=%q,可选:ax|structured|full", a.Mode)
+		}
+		effective = err == nil
 	case *GetInteractive:
 		value, err = w.GetInteractives(ctx)
 		effective = err == nil
@@ -123,6 +144,11 @@ func (w *Web) RunAction(ctx context.Context, action Action) (ActionResult, error
 		return ActionResult{}, fmt.Errorf("不支持的动作类型 %T", action)
 	}
 	if err != nil {
+		// 出错时才探活（#12）：若页面确实已失效，就地标记，归还时据此销毁重建，
+		// 取代原先"每次归还都发一次 Page.Info"的热路径往返。
+		if !w.IsActive() {
+			w.MarkBroken()
+		}
 		return ActionResult{}, err
 	}
 	return w.ActionResult(ctx, actionName, value, artifact, effective), nil
