@@ -13,7 +13,7 @@ import (
 
 const defaultAcquireTimeout = 30 * time.Second
 
-// BrowserAcquirer 基于基础织网蜘蛛（spider.Spider 契约）的"请求头获取器"，实现 Acquirer 接口。
+// BrowserAcquirer 基于基础织网蜘蛛（spider.SpiderAPI 契约）的"请求头获取器"，实现 Acquirer 接口。
 // 借助蜘蛛的浏览器级劫持（hijack）临时监听目标请求，捕获请求头快照后回传，供
 // direct.Client 走纯 HTTP 直连复用（这把浏览器当"头制造机"，造完即撤退）。
 //
@@ -21,11 +21,11 @@ const defaultAcquireTimeout = 30 * time.Second
 // 从回调取回请求头 -> 移除规则"，全程在单 goroutine 顺序完成，避免与
 // router 事件循环并发修改 handler（go-rod 的 handler 切片并非并发安全）。
 type BrowserAcquirer struct {
-	s spider.Spider
+	s spider.SpiderAPI
 }
 
 // NewBrowserAcquirer 基于一只已就绪的基础蜘蛛构造头获取器。
-func NewBrowserAcquirer(s spider.Spider) *BrowserAcquirer {
+func NewBrowserAcquirer(s spider.SpiderAPI) *BrowserAcquirer {
 	return &BrowserAcquirer{s: s}
 }
 
@@ -49,7 +49,7 @@ func (a *BrowserAcquirer) Acquire(ctx context.Context, t Target) (*hijack.Reques
 			default: // 已满足请求，后续多余命中直接丢弃
 			}
 		}),
-	}}, func(sp spider.Spider) error {
+	}}, func(sp spider.SpiderAPI) error {
 		// 2) 借一张网，在其页面内跑一条 fetch 触发真实请求。
 		//    用 await 等到请求被真正发出（hijack 在请求 pause 时触发），
 		//    而非只把任务抛给事件循环就返回。

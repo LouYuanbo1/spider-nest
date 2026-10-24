@@ -24,7 +24,6 @@
 
 ```
 spider-nest/
-├── main.go                  # 终端多轮对话 CLI 入口（读取配置、拉起 agent、持久化会话）
 ├── config/
 │   ├── config.go            # 配置结构体定义（SpiderConfig / RodConfig /ModelConfig）
 │   ├── load.go              # YAML 配置加载；API Key 支持环境变量优先级
@@ -32,12 +31,16 @@ spider-nest/
 │   └── config_example.yaml  # 配置模板（可复制为 config.yaml 使用）
 │
 ├── nest/
-│   └── nest.go              # 巢：蜘蛛池（多浏览器并发），Acquire/Release/Borrow
+│   └── nest.go              # 巢：蜘蛛池（多浏览器并发），Acquire/Release/Borrow/AcquireSpider
 │
 ├── spider/
-│   ├── spider.go            # 蜘蛛：单浏览器实例 + 页面网池，Crawl/CrawlConcurrent/Close
+│   ├── spider.go            # Weaver：单浏览器实例 + 页面网池；SpiderAPI / PersistentHijacker / Spider 契约
 │   ├── option.go            # Chrome 启动器选项函数（headless/sandbox/UA/窗口 等）
-│   └── option_test.go       # 启动器选项单元测试
+│   ├── hijack.go            # Weaver 侧 hijack 编排：WithHijack(窗口式) / EnableHijack(常驻)
+│   ├── scope.go             # AcquiredSpider：DSL 显式借-用-还句柄（Hijack/Go/Release 链式）
+│   ├── hijack/              # 叶包：HijackRule / 三种 Capture / 各工厂 handler（跨包共用不背蜘蛛）
+│   ├── direct/              # 叶包：聪明直连蜘蛛（浏览器只当"头制造机"，纯 HTTP 直连复用 + 失效回退）
+│   ├── option_test.go / hijack_test.go / scope_test.go  # 单元测试
 │
 ├── web/                     # 网：单张页面的封装与动作执行
 │   ├── web.go               # Web 结构体、导航、RunAction/RunActions、超时与人类化延迟
@@ -63,6 +66,11 @@ spider-nest/
 │       └── fs/              # 记忆持久化（JSONL 会话存储）
 │           ├── store.go     # Store / Session 元数据管理（GetOrCreate/List/Delete）
 │           └── session.go   # Session 追加/读取/标题推导
+│
+├── cmd/                     # 可执行入口
+│   ├── ai/                  # 终端多轮对话 CLI（读取配置、拉起 agent、持久化会话）
+│   ├── dsl/                 # 显式借-用-还 DSL 走查示例
+│   └── manual/              # 程序化捕获/Hijack 手动演示
 │
 ├── user_data/               # 本地运行数据（已 ignore）：sessions/(对话历史) browser/(Chrome 数据)
 ├── go.mod / go.sum
@@ -126,7 +134,7 @@ Nest ──蜘蛛池──  spiderSize 只蜘蛛，每只 = 一个独立 Chrome 
 
    ```bash
    go mod tidy
-   go run .
+   go run ./cmd/ai
    ```
 
 4. **终端交互**
@@ -143,6 +151,10 @@ Nest ──蜘蛛池──  spiderSize 只蜘蛛，每只 = 一个独立 Chrome 
 
 ## 使用示例
 
+> 库同时提供**两种可互转的 API 风格**，底层共享同一套 `Spider API / PersistentHijacker / Spider` 契约：
+> - **命令式（窗口式）**：`Borrow` / `WithHijack`，一次「借-用-还」即用即撤，监听随函数窗口结束自动释放（下例 1/2/3）。
+> - **DSL（显式借-用-还链式）**：`nest.AcquireSpider()` 拿到句柄，`.Hijack().Go(...).Go(...).Release()`，监听归属蜘蛛、借用期内跨多次操作持续生效（下例 4）。
+
 ### 1. 以库方式抓取（单组动作）
 
 ```go
@@ -157,7 +169,7 @@ func main() {
     ctx := context.Background()
     cfg, _ := config.Load("config/config.yaml")
 
-    s, err := spider.NewSpider(cfg.Spider)
+    s, err := spider.NewWeaver(cfg.Spider)
     if err != nil { panic(err) }
     defer s.Close()
 
@@ -188,18 +200,62 @@ allResult, err := s.CrawlConcurrent(ctx, groups)
 
 ```go
 import "github.com/LouYuanbo1/spider-nest/nest"
+import "github.com/LouYuanbo1/spider-nest/spider"
 
-// 3 只蜘蛛（Chrome 进程），每只最多 2 张网
-n, _ := nest.NewNest(cfg.Spider, 3, 2)
+// 3 只蜘蛛（Chrome 进程），每只最多 2 张网。
+// Generic：巢的类型参数是蜘蛛的具体类型；create 闭包捕获配置创建蜘蛛，
+// 巢本身不持有配置。
+n, _ := nest.NewNest(3, func() (*spider.Weaver, error) {
+    return spider.NewWeaver(cfg.Spider)
+})
 defer n.Close()
 
-err := n.Borrow(func(s *spider.Spider) error {
+err := n.Borrow(func(s spider.SpiderAPI) error {
     _, err := s.Crawl(ctx, actions)
     return err
 })
 ```
 
-### 4. 用智能体做多轮对话
+### 4. DSL 显式借-用-还（监听归属蜘蛛）
+
+```go
+sp := n.AcquireSpider()
+// 监听写一次、借用期内常驻：每次 Go() 异步提交一组动作，后台自动借一张网、执行、
+// 自动归还；多次 Go 各自并发借网，充分利用蜘蛛内部网页池的并发能力。
+// Release() 会等待全部后台任务收尾后归还蜘蛛（幂等）；任何一步出错都累积进句柄，
+// Release 时一并取回。结果须在 Release 之后再读，此时各组才收齐。
+err := sp.WithContext(ctx).
+    Hijack(config.HijackConfig{Name: "sniff", Pattern: "*/api/sniff*", Method: "POST", Handler: config.HijackHandlerEcho}).
+    Go(&web.Navigate{URL: "https://a.com"}).
+    Go(sniff(1)...). // 每次 Go 异步并发，各自借一张网，且都在同一套蜘蛛级监听下
+    Go(sniff(2)...).
+    Release()
+
+// 二重结果：外层下标 = 第几次 Go（按提交顺序，与后台完成先后无关），
+// 内层 = 该次 Go 的动作结果。多次 Go 结果互不覆盖。
+for gi, grp := range sp.Results() {
+    for i, r := range grp {
+        fmt.Printf("Go[%d] action[%d] Value=%v\n", gi, i, r.Value)
+    }
+}
+```
+
+> 上例中的 `sniff(k)` 是演示用的动作序列构造（如发一条会被监听截获的 `fetch`），
+> 实际使用时替换为任意 `web.Action` 序列即可：`.Go(actions...).Go(actions...)` 逐组借网执行。
+
+### 5. 聪明直连（direct）：把浏览器当「头制造机」复用
+
+> `spider/direct` 与浏览器解耦：先用浏览器捕获一套带实时 Cookie/反爬签名的请求头，
+> 之后直接走纯 HTTP 直连复用，快、不占页面；遇 403/429 再回退重新偷头。
+
+```go
+fetcher := direct.NewFetcher(direct.WithTimeout(30 * time.Second))
+acq := direct.NewBrowserAcquirer(spiderInstance) // SpiderAPI 即可
+cli := direct.New(fetcher, acq, direct.WithMaxRetries(2))
+resp, err := cli.Fetch(ctx, direct.Target{Method: "GET", URL: "https://api.x.com/res"})
+```
+
+### 6. 用智能体做多轮对话
 
 ```go
 import (
@@ -219,7 +275,7 @@ err := modelAgent.OutputMessage(ctx, sessionID, "打开xx网站截图首页", fu
 })
 ```
 
-### 5. 页面转 PDF 并合并
+### 7. 页面转 PDF 并合并
 
 ```go
 path, err := w.GetPDF(ctx, &web.GetPDF{Artifact: web.Artifact{Dir: "./out"}})
@@ -322,6 +378,10 @@ merged, err := web.MergePDFs(ctx, web.Artifact{Dir: "./out", Name: "merged"}, pa
 ### ⚠️ `javascript_tool` 与 prompt 注入
 - agent 具持执行任意 JavaScript 的能力（`javascript_tool`）。若页面内容可控/含恶意脚本，配合不安全的 prompt 输入，理论上可被诱导执行危险操作。
 - 请**仅向可信的受控输入**开放自主 agent，或自行裁剪工具集（编辑 `agent/agent.go` 中 `newSpiderTools` 的注册表）以关闭 `javascript` / 其它高危工具。
+
+### 🔎 `spider/direct` 直连蜘蛛（两点留意）
+- **敏感请求头缓存无过期**：`direct.Client` 会把捕获的请求头快照（含 **Cookie / Authorization** 等）按 URL 缓存在内存中，静默重放到后续直连，直到主动 `Clear` / `Fresh` 或命中状态码刷新策略。它**不会自动过期**，长期运行的健壮性程序应在会话切换后调用 `Clear(url)` / `Fresh(...)`，避免把旧会话的登录态错误地重放到新请求。
+- **默认无直连超时**：`direct.NewFetcher()` 默认持有「无超时」的 `http.Client`，若调用方 Context 也无 deadline，单次直连可能无限阻塞。请务必显式 `direct.WithTimeout(...)`，或确保 `ctx` 携带超时。
 
 ### ℹ️ 其它
 - `headless`、`user_mode`、`incognito` 等按部署环境取舍；非 headless 需要桌面环境。

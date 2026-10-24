@@ -16,14 +16,17 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-// Spider 蜘蛛契约：任何能被蜘蛛巢(Nest)当作"一只蜘蛛"对待的抓取单元，
+// SpiderAPI 蜘蛛的"日常 API 面"：任何能被蜘蛛巢(Nest)当作"一只蜘蛛"对待的抓取单元，
 // 都要实现这组方法；未来落地"更聪明的蜘蛛"（如 direct 的直连回放蜘蛛）时，
 // 只要补全此契约即可无缝并入同一巢中复用/隔离。
 //
 // 当前契约以"浏览器驱动"为核心（借网/织动作），对非浏览器的直连蜘蛛而言
 // Acquire/Borrow/Crawl 一族并不适用。后续出现非浏览器蜘蛛时，可视情况把
-// 契约收敛为更窄的核心再分层，现阶段忠实反映 Weaver 的全部公开行为。
-type Spider interface {
+// 契约收敛为更窄的核心再分层，现阶段忠实反映 Weaver 的日常公开行为。
+//
+// 它刻意独立于常驻监听能力（PersistentHijacker）：DSL 与平时使用只需触碰这套
+// 日常 API，不必关心"常驻监听"这种需要主动管理撤销时机的重能力。
+type SpiderAPI interface {
 	Acquire() (*web.Web, error)
 	Release(w *web.Web) error
 	Borrow(fn func(*web.Web) error) error
@@ -31,9 +34,38 @@ type Spider interface {
 	CrawlConcurrent(ctx context.Context, actionGroups [][]web.Action) ([][]web.ActionResult, error)
 	Close() error
 	IsActive() bool
-	// WithHijack 为一次"借-用-还"在蜘蛛上挂起一套监听：回调 fn 拿到蜘蛛本体，
-	// 在其上执行动作期间规则生效，返回后立即撤除。
-	WithHijack(rules []hijack.HijackRule, fn func(Spider) error) error
+	// WithHijack 在 fn 执行期间挂起一套监听并自动撤除（一次操作窗口的便捷封装）。
+	WithHijack(rules []hijack.HijackRule, fn func(SpiderAPI) error) error
+}
+
+// 说明：蜘蛛的"常驻监听"能力归属具体实现，刻意不放进 SpiderAPI 契约。
+// 它把监听挂上后可在同一蜘蛛借用期内跨多次操作持续生效，直到调用 stop 才撤，需要
+// 调用方主动管理 stop 的时机。正因如此，它不适合作为所有持有 SpiderAPI 者都能触碰的
+// 默认入口——由知道具体实现的地方（如 Nest）把该能力捕获成闭包，注入给真正需要的
+// 消费者（如 AcquiredSpider）。WithHijack 是面向普通调用方的安全窗口封装：即用即撤。
+
+// PersistentHijacker 是可"常驻监听"的蜘蛛能力契约：EnableHijack 把一组规则以常驻
+// 方式挂到蜘蛛上，返回撤销闭包与错误。监听归属蜘蛛生命周期，跨多次操作持续生效，
+// 直到调用者主动 stop 才撤——是"持久"而非"永久"：撤销时机始终握在调用方手里。
+//
+// 它刻意独立于 SpiderAPI 契约：并非所有蜘蛛都支持常驻监听，但凡是支持的（如 *Weaver、
+// 以及 Nest 的一切蜘蛛）都以本接口为统一载体。它亦是构成完整 Spider 契约的横切面，供
+// 需要完整能力的消费者按需合并引用。
+type PersistentHijacker interface {
+	EnableHijack(rules []hijack.HijackRule) (stop func(), err error)
+}
+
+// Spider 是"能常驻监听的蜘蛛"完整契约：日常 API 面（SpiderAPI）+ 常驻监听能力
+// （PersistentHijacker）的合并接口。构造方（如 Nest 与 AcquiredSpider）拿到一只
+// 实现了此接口的蜘蛛后，即可在编译期直接、无需断言地调用 EnableHijack——无论
+// 日常使用还是常驻监听能力，都唾手可得，无需各自独立引用两个接口。
+//
+// 它与 Nest 的泛型约束 hijackSpider[T] 呼应：后者在编译期保证巢内蜘蛛必然
+// 满足本契约，此处把这一保证收敛成单个可引用接口，供 AcquiredSpider 这类
+// 携带蜘蛛的消费者直接使用。
+type Spider interface {
+	SpiderAPI
+	PersistentHijacker
 }
 
 // Weaver 织网蜘蛛：最普通的那种浏览器爬虫——持有浏览器实例（*rod.Browser）与网池，
@@ -52,7 +84,11 @@ type Weaver struct {
 	opTimeout time.Duration
 }
 
-func NewWeaver(cfg *config.SpiderConfig) (Spider, error) {
+// Weaver 完整实现 Spider 契约（日常 API + 常驻监听能力），此处锁死在编译期：
+// 若后续 Weaver 的方法集合与 Spider 契约漂移，会在此编译报错，避免带病演进。
+var _ Spider = (*Weaver)(nil)
+
+func NewWeaver(cfg *config.SpiderConfig) (*Weaver, error) {
 	if cfg.OperationTimeout <= 0 {
 		cfg.OperationTimeout = 30 * time.Second
 	}

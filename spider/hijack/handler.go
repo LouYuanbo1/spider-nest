@@ -164,6 +164,11 @@ func EchoHandler() HijackHandler {
 			"url":    h.Request.URL().String(),
 			"query":  h.Request.URL().Query(),
 		})
+		// 回喂的假响应也要带 CORS 头：页面常以跨域 fetch 命中假 API（尤其 AI 爬虫
+		// 截获第三方接口），缺了这些头浏览器会预检拦截，页面拿不到回喂内容。
+		h.Response.SetHeader("Access-Control-Allow-Origin", "*")
+		h.Response.SetHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+		h.Response.SetHeader("Access-Control-Allow-Headers", "*")
 		h.Response.SetHeader("Content-Type", "application/json")
 		h.Response.SetBody(payload)
 	}
