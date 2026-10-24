@@ -49,11 +49,11 @@ func (a *BrowserAcquirer) Acquire(ctx context.Context, t Target) (*hijack.Reques
 			default: // 已满足请求，后续多余命中直接丢弃
 			}
 		}),
-	}}, func() error {
+	}}, func(sp spider.Spider) error {
 		// 2) 借一张网，在其页面内跑一条 fetch 触发真实请求。
 		//    用 await 等到请求被真正发出（hijack 在请求 pause 时触发），
 		//    而非只把任务抛给事件循环就返回。
-		return a.s.Borrow(func(w *web.Web) error {
+		return sp.Borrow(func(w *web.Web) error {
 			if _, err := w.RunAction(ctx, &web.JavaScript{JS: fetchScript(t)}); err != nil {
 				return err
 			}

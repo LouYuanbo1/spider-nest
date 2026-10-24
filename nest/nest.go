@@ -135,7 +135,5 @@ func (n *Nest) Borrow(hijackCfg []config.HijackConfig, fn func(spider.Spider) er
 	if err != nil {
 		return err
 	}
-	return s.WithHijack(rules, func() error {
-		return fn(s)
-	})
+	return s.WithHijack(rules, fn)
 }

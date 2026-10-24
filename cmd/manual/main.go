@@ -48,8 +48,8 @@ func main() {
 				capSink = append(capSink, *c)
 			}),
 		},
-	}, func() error {
-		return s.Borrow(func(w *web.Web) error {
+	}, func(sp spider.Spider) error {
+		return sp.Borrow(func(w *web.Web) error {
 			if _, err := w.RunAction(ctx, &web.Navigate{
 				URL: "data:text/html,<title>hijack-demo</title><body>hijack demo</body>",
 			}); err != nil {

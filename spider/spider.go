@@ -31,8 +31,9 @@ type Spider interface {
 	CrawlConcurrent(ctx context.Context, actionGroups [][]web.Action) ([][]web.ActionResult, error)
 	Close() error
 	IsActive() bool
-	// WithHijack 为一次"借-用-还"挂一套监听：fn 运行期间规则生效，结束即撤。
-	WithHijack(rules []hijack.HijackRule, fn func() error) error
+	// WithHijack 为一次"借-用-还"在蜘蛛上挂起一套监听：回调 fn 拿到蜘蛛本体，
+	// 在其上执行动作期间规则生效，返回后立即撤除。
+	WithHijack(rules []hijack.HijackRule, fn func(Spider) error) error
 }
 
 // Weaver 织网蜘蛛：最普通的那种浏览器爬虫——持有浏览器实例（*rod.Browser）与网池，
