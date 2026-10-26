@@ -8,6 +8,7 @@ require (
 	github.com/cloudwego/eino v0.9.22
 	github.com/cloudwego/eino-ext/components/model/deepseek v0.1.7
 	github.com/go-rod/rod v0.116.2
+	github.com/go-rod/stealth v0.4.9
 	github.com/johnfercher/maroto/v2 v2.4.3
 	github.com/stretchr/testify v1.12.1
 	github.com/ysmood/gson v0.7.3
@@ -27,7 +28,6 @@ require (
 	github.com/cohesion-org/deepseek-go v1.3.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
-	github.com/go-rod/stealth v0.4.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect
