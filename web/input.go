@@ -6,12 +6,13 @@ import (
 	"math/rand/v2"
 	"strings"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 )
 
-// Humanize 复用 Spider.humanize 字段，由 config.yaml 的 rod.humanize 控制。
+// humanize 字段由 config.yaml 的 spider.humanize 控制，在 NewWeaver 创建网时注入。
 // 开启时：打字逐字+随机停顿、偶发打错、点击前 hover 停顿、分段式滚动；
 // 关闭时：退化为原有的一次性输入/单次点击/瞬时滚动。
 
@@ -103,7 +104,7 @@ func typeLikeHuman(el *rod.Element, text string, clearFlag bool) error {
 
 // typeText 将文本输入到元素；clearFlag 为 true 时先清空原有内容。
 // 使用 rod 原生键盘事件触发真实输入，对 React/Vue 受控组件友好。
-// 开启 humanize 时走逐字打字（见 humanize.go），否则一次性写入。
+// 开启 humanize 时走逐字打字（见 typeLikeHuman），否则一次性写入。
 func (w *Web) typeText(el *rod.Element, text string, clearFlag bool) error {
 	if !w.humanize {
 		if clearFlag {
@@ -145,31 +146,31 @@ func (w *Web) inputToElement(el *rod.Element, text string, clearFlag bool) (bool
 }
 
 // DoInput 在网持有的页面上以 CSS 选择器定位输入框输入文本；返回是否真正写入成功
-func (w *Web) doInput(ctx context.Context, action *Input) (bool, error) {
+func (w *Web) doInput(ctx context.Context, a *action.Input) (bool, error) {
 	page := w.Page.Context(ctx)
 	var el *rod.Element
 	var err error
-	switch action.Type {
-	case SelectorTypeCSS:
-		el, err = page.Element(action.Selector)
-	case SelectorTypeXPath:
-		el, err = page.ElementX(action.Selector)
+	switch a.Type {
+	case action.SelectorTypeCSS:
+		el, err = page.Element(a.Selector)
+	case action.SelectorTypeXPath:
+		el, err = page.ElementX(a.Selector)
 	default:
-		return false, fmt.Errorf("未知选择器类型 %q", action.Type)
+		return false, fmt.Errorf("未知选择器类型 %q", a.Type)
 	}
 	if err != nil {
-		return false, fmt.Errorf("未找到输入框 %q: %v", action.Selector, err)
+		return false, fmt.Errorf("未找到输入框 %q: %v", a.Selector, err)
 	}
-	return w.inputToElement(el, action.Text, action.Clear)
+	return w.inputToElement(el, a.Text, a.Clear)
 }
 
 func (w *Web) DoInput(
 	ctx context.Context,
-	action *Input,
+	a *action.Input,
 ) (bool, error) {
 	return w.timeoutResultWrapper(
 		ctx,
-		action,
+		a,
 		w.doInput,
 	)
 }
@@ -178,13 +179,16 @@ func (w *Web) DoInput(
 // 返回是否真正写入成功
 func (w *Web) doInputByAX(
 	ctx context.Context,
-	action *InputByAXTree,
+	a *action.InputByAXTree,
 ) (bool, error) {
 	page := w.Page.Context(ctx)
 	var err error
-	backendDOMNodeID := action.BackendDOMNodeID
-	if action.BackendDOMNodeID == 0 && (action.Role != "" || action.Name != "") {
-		backendDOMNodeID, err = getNodeIDByRoleAndName(page, action.Role, action.Name, action.Nth)
+	backendDOMNodeID := a.BackendDOMNodeID
+	if backendDOMNodeID == 0 {
+		if a.Role == "" && a.Name == "" {
+			return false, fmt.Errorf("InputByAXTree 缺少定位信息：node_id、role、name 至少提供一个")
+		}
+		backendDOMNodeID, err = getNodeIDByRoleAndName(page, a.Role, a.Name, a.Nth)
 		if err != nil {
 			return false, fmt.Errorf("获取节点 %d 失败: %v", backendDOMNodeID, err)
 		}
@@ -193,16 +197,16 @@ func (w *Web) doInputByAX(
 	if err != nil {
 		return false, fmt.Errorf("解析节点 %d 失败: %v", backendDOMNodeID, err)
 	}
-	return w.inputToElement(el, action.Text, action.Clear)
+	return w.inputToElement(el, a.Text, a.Clear)
 }
 
 func (w *Web) DoInputByAX(
 	ctx context.Context,
-	action *InputByAXTree,
+	a *action.InputByAXTree,
 ) (bool, error) {
 	return w.timeoutResultWrapper(
 		ctx,
-		action,
+		a,
 		w.doInputByAX,
 	)
 }

@@ -31,21 +31,25 @@ spider-nest/
 │   └── config_example.yaml  # 配置模板（可复制为 config.yaml 使用）
 │
 ├── nest/
-│   └── nest.go              # 巢：蜘蛛池（多浏览器并发），Acquire/Release/Borrow/AcquireSpider
+│   └── nest.go              # 巢：蜘蛛池（多浏览器并发），Acquire/Release/Borrow
 │
 ├── spider/
-│   ├── spider.go            # Weaver：单浏览器实例 + 页面网池；SpiderAPI / PersistentHijacker / Spider 契约
+│   ├── spider.go            # Weaver：单浏览器实例 + 页面网池；SpiderAPI 契约
 │   ├── option.go            # Chrome 启动器选项函数（headless/sandbox/UA/窗口 等）
-│   ├── hijack.go            # Weaver 侧 hijack 编排：WithHijack(窗口式) / EnableHijack(常驻)
-│   ├── scope.go             # AcquiredSpider：DSL 显式借-用-还句柄（Hijack/Go/Release 链式）
+│   ├── hijack.go            # Weaver 侧 hijack 编排：WithHijack(即用即撤窗口)
 │   ├── hijack/              # 叶包：HijackRule / 三种 Capture / 各工厂 handler（跨包共用不背蜘蛛）
 │   ├── direct/              # 叶包：聪明直连蜘蛛（浏览器只当"头制造机"，纯 HTTP 直连复用 + 失效回退）
-│   ├── option_test.go / hijack_test.go / scope_test.go  # 单元测试
+│   ├── option_test.go / hijack_test.go  # 单元测试
+│
+├── action/                  # 全网共享的动作协议层（类型定义，不含执行）
+│   ├── action.go            # 动作类型：Navigate/Click/Input/Scroll/JavaScript/
+│   │                        #   GetHTML/GetAXContent/GetStructured/GetInteractive/GetPDF
+│   ├── parse.go             # 声明式动作解析核心（Spec + ParseActions），格式无关
+│   ├── specs.go             # YAML / JSON 两种格式前端，复用 ParseActions 开放给命令入口/测试
+│   └── result.go            # 结构化 ActionResult（协议响应侧）
 │
 ├── web/                     # 网：单张页面的封装与动作执行
 │   ├── web.go               # Web 结构体、导航、RunAction/RunActions、超时与人类化延迟
-│   ├── action.go            # 动作类型：Navigate/Click/Input/Scroll/JavaScript/
-│   │                        #   GetHTML/GetAXContent/GetStructured/GetInteractive/GetPDF
 │   ├── click.go / input.go  # CSS/XPath/AX 节点定位的点击与输入
 │   ├── scroll.go            # 分段式/带停顿的页面滚动
 │   ├── javascript.go        # 页面内执行任意 JS 并序列化返回值
@@ -56,7 +60,7 @@ spider-nest/
 │   ├── get_structured.go    # HTML 剪枝 + 转可读 Markdown
 │   ├── gethtml.go           # 取完整原始 HTML
 │   ├── pdf.go               # 页面打印 PDF（流式落盘）+ 多 PDF 合并
-│   └── result.go            # 结构化 ActionResult
+│   └── result.go            # 结果填充：补页面标题 / URL 等上下文
 │
 ├── agent/
 │   ├── agent.go             # 智能体：工具注册、指令提示词、流式输出、思考过程回放
@@ -67,10 +71,11 @@ spider-nest/
 │           ├── store.go     # Store / Session 元数据管理（GetOrCreate/List/Delete）
 │           └── session.go   # Session 追加/读取/标题推导
 │
-├── cmd/                     # 可执行入口
+├── cmd/                     # 可执行入口（内置 4 个 demo）
 │   ├── ai/                  # 终端多轮对话 CLI（读取配置、拉起 agent、持久化会话）
-│   ├── dsl/                 # 显式借-用-还 DSL 走查示例
-│   └── manual/              # 程序化捕获/Hijack 手动演示
+│   ├── direct/              # 聪明直连 demo：浏览器当"头制造机"，纯 HTTP 直连 + 失效回退
+│   ├── manual/              # 程序化捕获/Hijack 手动演示
+│   └── parse/               # 声明式动作 demo：从 YAML（actions.yaml）解析动作序列并执行
 │
 ├── user_data/               # 本地运行数据（已 ignore）：sessions/(对话历史) browser/(Chrome 数据)
 ├── go.mod / go.sum
@@ -103,6 +108,7 @@ Nest ──蜘蛛池──  spiderSize 只蜘蛛，每只 = 一个独立 Chrome 
   - `ax`（默认，首选）：基于浏览器可访问性树输出紧凑 Markdown，天然剔除隐藏/装饰/脚本节点，还原标题/列表/表格与层级，每条可交互元素附 `node_id` 可直接点击/输入，最省 token；
   - `structured`：已剪枝 DOM 转可读 Markdown，保留粗体/行内代码等富文本内联格式；
   - `full`：完整原始 HTML，适合需要精确 DOM 结构 / CSS 属性 / 选择器定位的场景。
+- **声明式动作（YAML/JSON）**：动作层提供格式无关的解析核心 `action.ParseActions`，并内置 YAML / JSON 两种前端（`ParseYAML` / `ParseJSON`）；把"步骤"写成配置文件即可交由爬虫/巢按序执行，也天然是智能体工具的同一套契约。
 - **人类化行为模拟**：逐字打字 + 随机停顿 + 偶发打错后退格、点击前 hover 停留、分段滚动并穿插「阅读」停顿，降低反爬特征。
 - **执行可观测**：每步动作返回结构化 `ActionResult`（动作名 / 标题 / URL / 返回值 / 落盘产物路径 / 是否生效）。
 - **健壮性设计**：单动作超时控制、工具调用超时后让模型反思重试、JS 偶发失败自动重试、流式工具参数跨 chunk 正确累积、PDF 流式落盘 `O(1)` 内存不放大文件全量载入。
@@ -134,10 +140,13 @@ Nest ──蜘蛛池──  spiderSize 只蜘蛛，每只 = 一个独立 Chrome 
 
    ```bash
    go mod tidy
-   go run ./cmd/ai
+   go run ./cmd/ai         # 智能体多轮对话 CLI
+   go run ./cmd/parse      # 声明式动作：解析 cmd/parse/actions.yaml 并执行
+   go run ./cmd/direct     # 聪明直连：偷头 → 纯 HTTP 直连 + 失效回退
+   go run ./cmd/manual     # 程序化捕获 / Hijack 手动演示（需 httbin 可访问）
    ```
 
-4. **终端交互**
+4. **终端交互（`cmd/ai`）**
 
    ```
    [已创建新会话 20261023-1a2b]
@@ -151,46 +160,44 @@ Nest ──蜘蛛池──  spiderSize 只蜘蛛，每只 = 一个独立 Chrome 
 
 ## 使用示例
 
-> 库同时提供**两种可互转的 API 风格**，底层共享同一套 `Spider API / PersistentHijacker / Spider` 契约：
-> - **命令式（窗口式）**：`Borrow` / `WithHijack`，一次「借-用-还」即用即撤，监听随函数窗口结束自动释放（下例 1/2/3）。
-> - **DSL（显式借-用-还链式）**：`nest.AcquireSpider()` 拿到句柄，`.Hijack().Go(...).Go(...).Release()`，监听归属蜘蛛、借用期内跨多次操作持续生效（下例 4）。
+> 库提供**命令式 API**：`Borrow` / `WithHijack`，一次「借-用-还」即用即撤，监听随函数窗口结束自动释放（下例 1/2/3）。
 
 ### 1. 以库方式抓取（单组动作）
 
 ```go
 import (
     "context"
+    "github.com/LouYuanbo1/spider-nest/action"
     "github.com/LouYuanbo1/spider-nest/config"
     "github.com/LouYuanbo1/spider-nest/spider"
-    "github.com/LouYuanbo1/spider-nest/web"
 )
 
 func main() {
     ctx := context.Background()
     cfg, _ := config.Load("config/config.yaml")
 
-    s, err := spider.NewWeaver(cfg.Spider)
+    s, err := spider.NewWeaver(spider.WithConfig(cfg.Spider))
     if err != nil { panic(err) }
     defer s.Close()
 
-    actions := []web.Action{
-        &web.Navigate{URL: "https://news.ycombinator.com"},
-        &web.GetContent{Mode: web.ContentModeAX},
+    actions := []action.Action{
+        &action.Navigate{URL: "https://news.ycombinator.com"},
+        &action.GetContent{Mode: action.ContentModeAX},
     }
 
     results, err := s.Crawl(ctx, actions)
     if err != nil { panic(err) }
-    // results: []web.ActionResult{...} 每步结构化结果
+    // results: []action.ActionResult{...} 每步结构化结果
 }
 ```
 
 ### 2. 并发抓取多组动作
 
 ```go
-groups := [][]web.Action{
-    {{&web.Navigate{URL: "https://a.com"}, &web.GetContent{}}},
-    {{&web.Navigate{URL: "https://b.com"}, &web.GetContent{}}},
-    {{&web.Navigate{URL: "https://c.com"}, &web.GetContent{}}},
+groups := [][]action.Action{
+    {{&action.Navigate{URL: "https://a.com"}, &action.GetContent{}}},
+    {{&action.Navigate{URL: "https://b.com"}, &action.GetContent{}}},
+    {{&action.Navigate{URL: "https://c.com"}, &action.GetContent{}}},
 }
 // 每组独占一张网并发执行
 allResult, err := s.CrawlConcurrent(ctx, groups)
@@ -206,44 +213,23 @@ import "github.com/LouYuanbo1/spider-nest/spider"
 // Generic：巢的类型参数是蜘蛛的具体类型；create 闭包捕获配置创建蜘蛛，
 // 巢本身不持有配置。
 n, _ := nest.NewNest(3, func() (*spider.Weaver, error) {
-    return spider.NewWeaver(cfg.Spider)
+    return spider.NewWeaver(spider.WithConfig(cfg.Spider))
 })
 defer n.Close()
 
-err := n.Borrow(func(s spider.SpiderAPI) error {
+// Crawl：借一只蜘蛛 → 顺序跑动作 → 自动归还（简单场景一步到位）
+results, err := n.Crawl(ctx, actions)
+// 需要监听时：n.Crawl(ctx, actions, cfgA, cfgB)（可选变参）
+fmt.Println(results)
+
+// BorrowSpider：需要借蜘蛛做更复杂编排时，明确定位拿蜘蛛本体
+err := n.BorrowSpider(func(s spider.SpiderAPI) error {
     _, err := s.Crawl(ctx, actions)
     return err
 })
 ```
 
-### 4. DSL 显式借-用-还（监听归属蜘蛛）
-
-```go
-sp := n.AcquireSpider()
-// 监听写一次、借用期内常驻：每次 Go() 异步提交一组动作，后台自动借一张网、执行、
-// 自动归还；多次 Go 各自并发借网，充分利用蜘蛛内部网页池的并发能力。
-// Release() 会等待全部后台任务收尾后归还蜘蛛（幂等）；任何一步出错都累积进句柄，
-// Release 时一并取回。结果须在 Release 之后再读，此时各组才收齐。
-err := sp.WithContext(ctx).
-    Hijack(config.HijackConfig{Name: "sniff", Pattern: "*/api/sniff*", Method: "POST", Handler: config.HijackHandlerEcho}).
-    Go(&web.Navigate{URL: "https://a.com"}).
-    Go(sniff(1)...). // 每次 Go 异步并发，各自借一张网，且都在同一套蜘蛛级监听下
-    Go(sniff(2)...).
-    Release()
-
-// 二重结果：外层下标 = 第几次 Go（按提交顺序，与后台完成先后无关），
-// 内层 = 该次 Go 的动作结果。多次 Go 结果互不覆盖。
-for gi, grp := range sp.Results() {
-    for i, r := range grp {
-        fmt.Printf("Go[%d] action[%d] Value=%v\n", gi, i, r.Value)
-    }
-}
-```
-
-> 上例中的 `sniff(k)` 是演示用的动作序列构造（如发一条会被监听截获的 `fetch`），
-> 实际使用时替换为任意 `web.Action` 序列即可：`.Go(actions...).Go(actions...)` 逐组借网执行。
-
-### 5. 聪明直连（direct）：把浏览器当「头制造机」复用
+### 4. 聪明直连（direct）：把浏览器当「头制造机」复用
 
 > `spider/direct` 与浏览器解耦：先用浏览器捕获一套带实时 Cookie/反爬签名的请求头，
 > 之后直接走纯 HTTP 直连复用，快、不占页面；遇 403/429 再回退重新偷头。
@@ -255,18 +241,25 @@ cli := direct.New(fetcher, src, direct.WithMaxRetries(2))
 resp, err := cli.Fetch(ctx, direct.Target{Method: "GET", URL: "https://api.x.com/res"})
 ```
 
-### 6. 用智能体做多轮对话
+### 5. 用智能体做多轮对话
+
+> 智能体（agent）自带 ReAct 工具循环，拿到一张网即可**自己开口下指令、自己上手操作**，
+> 多轮对话通过 session 持久化上下文（cfg 为 config.Load 的返回值，见例 1）。
 
 ```go
 import (
     "github.com/cloudwego/eino-ext/components/model/deepseek"
     "github.com/LouYuanbo1/spider-nest/agent"
+    "github.com/LouYuanbo1/spider-nest/spider"
 )
 
 chatModel, _ := deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
     APIKey: cfg.Model.APIKey,
     Model:  "deepseek-flash",
 })
+
+s, _ := spider.NewWeaver(spider.WithConfig(cfg.Spider)) // 一只蜘蛛
+defer s.Close()
 w, _ := s.Acquire(); defer s.Release(w)   // 借一张网
 modelAgent, _ := agent.NewDefaultSpiderAgent(ctx, chatModel, w)
 
@@ -275,20 +268,50 @@ err := modelAgent.OutputMessage(ctx, sessionID, "打开xx网站截图首页", fu
 })
 ```
 
-### 7. 页面转 PDF 并合并
+### 6. 页面转 PDF 并合并
 
 ```go
-path, err := w.GetPDF(ctx, &web.GetPDF{Artifact: web.Artifact{Dir: "./out"}})
-merged, err := web.MergePDFs(ctx, web.Artifact{Dir: "./out", Name: "merged"}, pathA, pathB)
+path, err := w.GetPDF(ctx, &action.GetPDF{Artifact: action.Artifact{Dir: "./out"}})
+merged, err := web.MergePDFs(ctx, action.Artifact{Dir: "./out", Name: "merged"}, pathA, pathB)
 ```
+
+### 7. 声明式动作（YAML / JSON）
+
+> 动作层提供格式无关的解析核心 `action.ParseActions`，并内置 YAML / JSON 两种前端
+> （`ParseYAML` / `ParseJSON`），把"步骤"写成配置文件即可交给爬虫/巢按序执行。
+
+```go
+import "github.com/LouYuanbo1/spider-nest/action"
+
+// 1) 从 YAML 加载（配置/命令入口/测试通用）：
+actions, err := action.ParseYAML(strings.NewReader(`
+actions:
+  - type: navigate
+    url: https://news.ycombinator.com
+  - type: get_ax_content
+  - type: scroll
+    scroll_y: 400
+`))
+
+// 2) 从 JSON 加载：
+actions, err = action.ParseJSON(strings.NewReader(
+    `{"actions": [{"type": "navigate", "url": "https://a.com"}, {"type": "get_ax_content"}]}`,
+))
+
+// 3) 交给蜘蛛按序执行：
+results, err := s.Crawl(ctx, actions)   // s 见例 1
+```
+
+命令入口示例见 `cmd/parse/main.go`（`actions.yaml` 位于 `cmd/parse/actions.yaml`），
+新增格式前端只需实现 `action.Spec` 接口的三个方法（`Kind` / `Decode` / `Line`）。
 
 ---
 
 ## 动作（Action）类型详解
 
-> 动作定义在 [web/action.go](file://web/action.go) 中，全部实现 `web.Action` 接口。
+> 动作定义在 `action/action.go` 中，全部实现 `action.Action` 接口。
 > 它们既可被 `Spider.Crawl` 组合成**声明式动作序列**直接调用，也可作为**智能体工具**由 LLM 自主择机触发。
-> 单步结果统一封装为 `web.ActionResult`（见 [web/result.go](file://web/result.go)），含**动作名 / 标题 / URL / 返回值 / 落盘产物路径 / 是否生效**。
+> 单步结果统一封装为 `action.ActionResult`（见 `action/result.go`），含**动作名 / 标题 / URL / 返回值 / 落盘产物路径 / 是否生效**。
 
 ### 导航
 | 动作 | 说明 |

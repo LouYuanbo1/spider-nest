@@ -25,7 +25,11 @@ func Load(path string) (*Config, error) {
 
 	// API Key 以环境变量为最高优先级，避免密钥硬编码进代码/配置仓库。
 	// 部署时注入 AI_SPIDER_API_KEY，yaml 中的 api_key 仅作本地兜底。
+	// cfg.Model 可能为 nil（配置缺 model 段），需放置 env 覆盖前判空，避免空指针 panic。
 	if k := os.Getenv("AI_SPIDER_API_KEY"); k != "" {
+		if cfg.Model == nil {
+			cfg.Model = new(ModelConfig)
+		}
 		cfg.Model.APIKey = k
 	}
 

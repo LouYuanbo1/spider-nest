@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand/v2"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/go-rod/rod"
 )
 
@@ -42,8 +43,6 @@ func scrollLikeHuman(p *rod.Page, totalY int) error {
 		if _, err := p.Eval(`(dy) => window.scrollBy(0, dy)`, step*direction); err != nil {
 			return err
 		}
-		// 原平滑滚动版本（后台/非激活标签页 rAF 被节流时可能不推进）：
-		// _, err = p.Eval(`(dy) => window.scrollBy({ top: dy, behavior: 'smooth' })`, step*direction)
 		remaining -= step
 
 		// 每段滚完后"阅读"一会儿（停留时长随机）
@@ -53,20 +52,18 @@ func scrollLikeHuman(p *rod.Page, totalY int) error {
 }
 
 // DoScroll 在网持有的页面上滚动，滚动后等待网络空闲以捕获懒加载内容。
-// 开启 humanize 时分段滚动并在每段间随机"阅读"停留（见 humanize.go）。
-func (w *Web) doScroll(ctx context.Context, action *Scroll) error {
+// 开启 humanize 时分段滚动并在每段间随机"阅读"停留（见 scrollLikeHuman）。
+func (w *Web) doScroll(ctx context.Context, a *action.Scroll) error {
 	page := w.Page.Context(ctx)
 	// 即时滚动（非 smooth）：后台/非激活标签页 rAF 会被节流，
 	// 平滑滚动动画因此不推进；即时改变 scrollTop 则与激活状态无关，规避该问题。
-	if !w.humanize || action.ScrollY == 0 {
-		_, err := page.Eval(`(dy) => window.scrollBy(0, dy)`, action.ScrollY)
+	if !w.humanize || a.ScrollY == 0 {
+		_, err := page.Eval(`(dy) => window.scrollBy(0, dy)`, a.ScrollY)
 		return err
 	}
-	// 原平滑滚动版本（如想对比效果可换回）：
-	// _, err := page.Eval(`(dy) => window.scrollBy({ top: dy, behavior: 'smooth' })`, action.ScrollY)
-	return scrollLikeHuman(page, action.ScrollY)
+	return scrollLikeHuman(page, a.ScrollY)
 }
 
-func (w *Web) DoScroll(ctx context.Context, action *Scroll) error {
-	return w.timeoutWrapper(ctx, action, w.doScroll)
+func (w *Web) DoScroll(ctx context.Context, a *action.Scroll) error {
+	return w.timeoutWrapper(ctx, a, w.doScroll)
 }

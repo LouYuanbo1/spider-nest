@@ -10,6 +10,14 @@ import (
 // LauncherOption 浏览器启动器选项函数
 type LauncherOption func(*launcher.Launcher)
 
+// 本文件封装启动一个浏览器实例所需的低层选项：
+//   - LauncherOption 以函数式选项模式、类型安全地构造 go-rod 的 launcher 参数；
+//   - CreateLauncher 依据 userMode 选择「复用本机用户资料」或「全新临时环境」，
+//     并把所有选项逐个应用到启动器。
+//
+// 每种开关都有对应的 With* 工厂（如 WithHeadless / WithWindowSize / WithUserAgent），
+// 上层 WithConfig 依据配置集中挑选并拼接这些选项；本文件只负责“把浏览器拉起来”。
+
 // boolFlag 通用布尔 Chrome flag 选项工厂
 func boolFlag(name flags.Flag, enable bool) LauncherOption {
 	return func(l *launcher.Launcher) {

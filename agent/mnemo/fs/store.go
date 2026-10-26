@@ -14,12 +14,12 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// Store manages persisted sessions backed by JSONL files.
+// Store 管理基于 JSONL 文件持久化的会话集合。
 //
-// File format:
+// 文件格式：
 //
-//	{"type":"session","id":"...","created_at":"...","message_kind":"agentic"}   ← header (line 1)
-//	{"role":"user","content_blocks":[...]}                                      ← message (lines 2+)
+//	{"type":"session","id":"...","created_at":"...","message_kind":"agentic"}   ← 首行头部
+//	{"role":"user","content_blocks":[...]}                                      ← 后续消息行
 type Store[M adk.MessageType] struct {
 	dir   string
 	kind  Kind
@@ -50,7 +50,7 @@ func ValidateKind(stored, target Kind, legacyMessageOK bool) error {
 	return nil
 }
 
-// NewStore creates a new Store backed by the given directory (created if absent).
+// NewStore 创建基于指定目录的 Store（目录不存在则自动创建）。
 func NewStore[M adk.MessageType](dir string) (*Store[M], error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create session dir: %w", err)
@@ -62,7 +62,7 @@ func NewStore[M adk.MessageType](dir string) (*Store[M], error) {
 	}, nil
 }
 
-// GetOrCreate returns the session for id, creating it if it does not exist.
+// GetOrCreate 返回 id 对应的会话，不存在则创建。
 func (s *Store[M]) GetOrCreate(id string) (*Session[M], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -90,7 +90,7 @@ func (s *Store[M]) GetOrCreate(id string) (*Session[M], error) {
 	return sess, nil
 }
 
-// List returns metadata for all known sessions.
+// List 返回所有已知会话的元信息。
 func (s *Store[M]) List() ([]SessionMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -121,7 +121,7 @@ func (s *Store[M]) List() ([]SessionMeta, error) {
 	return metas, nil
 }
 
-// Delete removes the session file and evicts it from the cache.
+// Delete 删除会话文件并从缓存中移除。
 func (s *Store[M]) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,7 +134,7 @@ func (s *Store[M]) Delete(id string) error {
 	return nil
 }
 
-// sessionHeader is the first JSONL line in every session file.
+// sessionHeader 是每个会话文件的第一行 JSONL 内容。
 type sessionHeader struct {
 	Type        string    `json:"type"`
 	ID          string    `json:"id"`
@@ -177,7 +177,7 @@ func loadSession[M adk.MessageType](filePath string) (*Session[M], error) {
 	// 这里把初始缓冲提到 256KB、单行上限放宽到 64MB。
 	scanner.Buffer(make([]byte, 256*1024), 64*1024*1024)
 
-	// First line: header
+	// 首行：会话头部
 	if !scanner.Scan() {
 		return nil, fmt.Errorf("empty session file: %s", filePath)
 	}
@@ -196,7 +196,7 @@ func loadSession[M adk.MessageType](filePath string) (*Session[M], error) {
 		messages:  make([]M, 0),
 	}
 
-	// Remaining lines: messages
+	// 其余行：会话消息
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {

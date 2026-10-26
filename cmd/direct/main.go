@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/LouYuanbo1/spider-nest/config"
 	"github.com/LouYuanbo1/spider-nest/spider"
 	"github.com/LouYuanbo1/spider-nest/spider/direct"
 )
@@ -22,12 +21,11 @@ func main() {
 
 	// 1) 一只基础织网蜘蛛：这里是"头制造机"，SpiderHeaderSource 借它临时监听，
 	//    偷一套浏览器真实发出的请求头（含 cookie/反爬签名等），供直连复用。
-	cfg := &config.SpiderConfig{
-		OperationTimeout: 30 * time.Second,
-		PagePoolLimit:    1,
-		Humanize:         false,
-	}
-	weaver, err := spider.NewWeaver(cfg)
+	weaver, err := spider.NewWeaver(
+		spider.WithOperationTimeout(30*time.Second),
+		spider.WithPagePoolLimit(1),
+		spider.WithHumanize(false),
+	)
 	if err != nil {
 		log.Fatalf("创建蜘蛛失败: %v", err)
 	}

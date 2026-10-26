@@ -49,21 +49,21 @@ func main() {
 		return
 	}
 
-	sipder, err := spider.NewWeaver(appcfg.Spider)
+	spiderInstance, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
 	if err != nil {
 		fmt.Printf("Error creating spider: %v", err)
 		return
 	}
-	defer sipder.Close()
+	defer spiderInstance.Close()
 
 	// 借取一张网供 agent 独占持有整轮会话：
 	// 会话结束先用 Release 归还（失效会被销毁重建并补网），再随 Close 统一回收。
-	w, err := sipder.Acquire()
+	w, err := spiderInstance.Acquire()
 	if err != nil {
 		fmt.Printf("Error acquiring web: %v", err)
 		return
 	}
-	defer sipder.Release(w)
+	defer spiderInstance.Release(w)
 
 	modelAgent, err := agent.NewDefaultSpiderAgent(ctx, chatModel, w)
 	if err != nil {

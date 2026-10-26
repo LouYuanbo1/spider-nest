@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/LouYuanbo1/spider-nest/spider"
 	"github.com/LouYuanbo1/spider-nest/spider/hijack"
 	"github.com/LouYuanbo1/spider-nest/web"
@@ -41,7 +42,17 @@ func (hs *SpiderHeaderSource) Capture(ctx context.Context, t Target) (*hijack.Re
 
 	// 1) 以"借-用-还"为一组，挂起一次性劫持监听：命中目标 URL 且方法一致时
 	//    捕获请求头回传。WithHijack 保证监听 goroutine 只在本次窗口存活、用完即撤。
-	err := hs.s.WithHijack([]hijack.HijackRule{{
+	err := hs.s.WithHijack(func(sp spider.SpiderAPI) error {
+		// 2) 借一张网，在其页面内跑一条 fetch 触发真实请求。
+		//    用 await 等到请求被真正发出（hijack 在请求 pause 时触发），
+		//    而非只把任务抛给事件循环就返回。
+		return sp.BorrowWeb(func(w *web.Web) error {
+			if _, err := w.RunAction(ctx, &action.JavaScript{JS: fetchScript(t)}); err != nil {
+				return err
+			}
+			return nil
+		})
+	}, hijack.HijackRule{
 		Pattern: t.URL,
 		Method:  t.method(),
 		Handler: hijack.RequestHandler(func(c *hijack.RequestCapture) {
@@ -50,16 +61,6 @@ func (hs *SpiderHeaderSource) Capture(ctx context.Context, t Target) (*hijack.Re
 			default: // 已满足请求，后续多余命中直接丢弃
 			}
 		}),
-	}}, func(sp spider.SpiderAPI) error {
-		// 2) 借一张网，在其页面内跑一条 fetch 触发真实请求。
-		//    用 await 等到请求被真正发出（hijack 在请求 pause 时触发），
-		//    而非只把任务抛给事件循环就返回。
-		return sp.Borrow(func(w *web.Web) error {
-			if _, err := w.RunAction(ctx, &web.JavaScript{JS: fetchScript(t)}); err != nil {
-				return err
-			}
-			return nil
-		})
 	})
 	if err != nil {
 		return nil, err

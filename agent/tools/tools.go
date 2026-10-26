@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/LouYuanbo1/spider-nest/web"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -50,8 +51,8 @@ func debugTool[T any](timeout time.Duration, name string, fn func(ctx context.Co
 	}
 }
 
-func NavigateFunc(w *web.Web) func(ctx context.Context, action *web.Navigate) (string, error) {
-	return func(ctx context.Context, action *web.Navigate) (string, error) {
+func NavigateFunc(w *web.Web) func(ctx context.Context, action *action.Navigate) (string, error) {
+	return func(ctx context.Context, action *action.Navigate) (string, error) {
 		cleanURL := strings.TrimSpace(action.URL)
 		// 移除首尾的反引号（解决LLM流式输出时带Markdown反引号的问题）
 		cleanURL = strings.Trim(cleanURL, "`")
@@ -84,8 +85,8 @@ func NewNavigateTool(w *web.Web) (tool.InvokableTool, error) {
 	return navigateTool, nil
 }
 
-func ClickFunc(w *web.Web) func(ctx context.Context, action *web.Click) (string, error) {
-	return func(ctx context.Context, action *web.Click) (string, error) {
+func ClickFunc(w *web.Web) func(ctx context.Context, action *action.Click) (string, error) {
+	return func(ctx context.Context, action *action.Click) (string, error) {
 		err := w.DoClick(ctx, action)
 		if err != nil {
 			return "", err
@@ -107,8 +108,8 @@ func NewClickTool(w *web.Web) (tool.InvokableTool, error) {
 		debugTool(w.OpTimeout(), "click_tool", ClickFunc(w)))
 }
 
-func ClickByAXFunc(w *web.Web) func(ctx context.Context, action *web.ClickByAXTree) (string, error) {
-	return func(ctx context.Context, action *web.ClickByAXTree) (string, error) {
+func ClickByAXFunc(w *web.Web) func(ctx context.Context, action *action.ClickByAXTree) (string, error) {
+	return func(ctx context.Context, action *action.ClickByAXTree) (string, error) {
 		err := w.DoClickByAX(ctx, action)
 		if err != nil {
 			return "", err
@@ -133,8 +134,8 @@ func NewClickByAXTool(w *web.Web) (tool.InvokableTool, error) {
 		debugTool(w.OpTimeout(), "click_by_ax_tool", ClickByAXFunc(w)))
 }
 
-func InputFunc(w *web.Web) func(ctx context.Context, action *web.Input) (string, error) {
-	return func(ctx context.Context, action *web.Input) (string, error) {
+func InputFunc(w *web.Web) func(ctx context.Context, action *action.Input) (string, error) {
+	return func(ctx context.Context, action *action.Input) (string, error) {
 		effective, err := w.DoInput(ctx, action)
 		if err != nil {
 			return "", err
@@ -158,8 +159,8 @@ func NewInputTool(w *web.Web) (tool.InvokableTool, error) {
 		debugTool(w.OpTimeout(), "input_tool", InputFunc(w)))
 }
 
-func InputByAXFunc(w *web.Web) func(ctx context.Context, action *web.InputByAXTree) (string, error) {
-	return func(ctx context.Context, action *web.InputByAXTree) (string, error) {
+func InputByAXFunc(w *web.Web) func(ctx context.Context, action *action.InputByAXTree) (string, error) {
+	return func(ctx context.Context, action *action.InputByAXTree) (string, error) {
 		effective, err := w.DoInputByAX(ctx, action)
 		if err != nil {
 			return "", err
@@ -184,8 +185,8 @@ func NewInputByAXTool(w *web.Web) (tool.InvokableTool, error) {
 		debugTool(w.OpTimeout(), "input_by_ax_tool", InputByAXFunc(w)))
 }
 
-func ScrollFunc(w *web.Web) func(ctx context.Context, action *web.Scroll) (string, error) {
-	return func(ctx context.Context, action *web.Scroll) (string, error) {
+func ScrollFunc(w *web.Web) func(ctx context.Context, action *action.Scroll) (string, error) {
+	return func(ctx context.Context, action *action.Scroll) (string, error) {
 		err := w.DoScroll(ctx, action)
 		if err != nil {
 			return "", err
@@ -211,8 +212,8 @@ func NewScrollTool(w *web.Web) (tool.InvokableTool, error) {
 	return scrollTool, nil
 }
 
-func JavaScriptFunc(w *web.Web) func(ctx context.Context, action *web.JavaScript) (string, error) {
-	return func(ctx context.Context, action *web.JavaScript) (string, error) {
+func JavaScriptFunc(w *web.Web) func(ctx context.Context, action *action.JavaScript) (string, error) {
+	return func(ctx context.Context, action *action.JavaScript) (string, error) {
 		value, err := w.DoJavaScript(ctx, action)
 		if err != nil {
 			// 把 JS 语法/执行报错原文回传，让模型据此修正脚本；
@@ -241,17 +242,17 @@ func NewJavaScriptTool(w *web.Web) (tool.InvokableTool, error) {
 	return jsTool, nil
 }
 
-func GetContentFunc(w *web.Web) func(ctx context.Context, action *web.GetContent) (string, error) {
-	return func(ctx context.Context, action *web.GetContent) (string, error) {
-		mode := web.DefaultContentMode(action.Mode)
+func GetContentFunc(w *web.Web) func(ctx context.Context, a *action.GetContent) (string, error) {
+	return func(ctx context.Context, a *action.GetContent) (string, error) {
+		mode := action.DefaultContentMode(a.Mode)
 		var value string
 		var err error
 		switch mode {
-		case web.ContentModeStructured:
+		case action.ContentModeStructured:
 			value, err = w.GetStructured(ctx)
-		case web.ContentModeFull:
+		case action.ContentModeFull:
 			value, err = w.GetHTML(ctx)
-		case web.ContentModeAX:
+		case action.ContentModeAX:
 			value, err = w.GetAXContent(ctx)
 		default:
 			return "", fmt.Errorf("未知的 mode=%q,可选:ax|structured|full", mode)
@@ -288,8 +289,8 @@ func NewGetContentTool(w *web.Web) (tool.InvokableTool, error) {
 	return getContentTool, nil
 }
 
-func GetInteractivesFunc(w *web.Web) func(ctx context.Context, action *web.GetInteractive) (string, error) {
-	return func(ctx context.Context, action *web.GetInteractive) (string, error) {
+func GetInteractivesFunc(w *web.Web) func(ctx context.Context, action *action.GetInteractive) (string, error) {
+	return func(ctx context.Context, action *action.GetInteractive) (string, error) {
 		interactives, err := w.GetInteractives(ctx)
 		effective := err == nil
 		result := w.ActionResult(ctx, "get_interactives", interactives, "", effective)
@@ -312,8 +313,8 @@ func NewGetInteractivesTool(w *web.Web) (tool.InvokableTool, error) {
 	return interactivesTool, nil
 }
 
-func GetPDFFunc(w *web.Web) func(ctx context.Context, action *web.GetPDF) (string, error) {
-	return func(ctx context.Context, action *web.GetPDF) (string, error) {
+func GetPDFFunc(w *web.Web) func(ctx context.Context, action *action.GetPDF) (string, error) {
+	return func(ctx context.Context, action *action.GetPDF) (string, error) {
 		artifactPath, err := w.GetPDF(ctx, action)
 		effective := err == nil
 		result := w.ActionResult(ctx, "get_pdf", "", artifactPath, effective)

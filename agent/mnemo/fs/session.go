@@ -19,14 +19,14 @@ const (
 	KindAgentic Kind = "agentic"
 )
 
-// SessionMeta provides summary info for the session list.
+// SessionMeta 提供会话列表所需的摘要信息。
 type SessionMeta struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Session holds the in-memory state for a single conversation.
+// Session 持有单个会话在内存中的状态。
 type Session[M adk.MessageType] struct {
 	ID        string
 	CreatedAt time.Time
@@ -34,39 +34,39 @@ type Session[M adk.MessageType] struct {
 	filePath           string
 	mu                 sync.Mutex
 	messages           []M
-	pendingInterruptID string // non-empty while the agent is paused awaiting human approval
-	msgIdx             int    // A2UI component slot index at the point of last interrupt
+	pendingInterruptID string // 智能体暂停等待人工审批期间非空
+	msgIdx             int    // 上次中断点处的 A2UI 组件槽位索引
 }
 
-// SetPendingInterruptID saves the interrupt ID so the approve endpoint can resume it.
+// SetPendingInterruptID 保存中断 ID，供审批接口后续恢复会话。
 func (s *Session[M]) SetPendingInterruptID(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pendingInterruptID = id
 }
 
-// GetPendingInterruptID returns the stored interrupt ID, or "" if none is pending.
+// GetPendingInterruptID 返回已保存的中断 ID；无待审批时返回空串。
 func (s *Session[M]) GetPendingInterruptID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pendingInterruptID
 }
 
-// SetMsgIdx stores the A2UI component slot counter so a resume can continue from it.
+// SetMsgIdx 保存 A2UI 组件槽位计数，供恢复时继续。
 func (s *Session[M]) SetMsgIdx(idx int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.msgIdx = idx
 }
 
-// GetMsgIdx returns the stored component slot counter.
+// GetMsgIdx 返回已保存的组件槽位计数。
 func (s *Session[M]) GetMsgIdx() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.msgIdx
 }
 
-// Append adds a message to memory and persists it to disk.
+// Append 向内存追加一条消息并落盘持久化。
 func (s *Session[M]) Append(msg M) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,7 +88,7 @@ func (s *Session[M]) Append(msg M) error {
 	return err
 }
 
-// GetMessages returns a snapshot of all messages.
+// GetMessages 返回全部消息的快照。
 func (s *Session[M]) GetMessages() []M {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,7 +98,7 @@ func (s *Session[M]) GetMessages() []M {
 	return result
 }
 
-// UserText returns text only for user-role messages.
+// UserText 仅提取用户角色的消息文本。
 func UserText[M adk.MessageType](msg M) string {
 	switch m := any(msg).(type) {
 	case *schema.Message:
@@ -143,7 +143,7 @@ func messageText(msg *schema.Message) string {
 	return strings.Join(parts, "\n")
 }
 
-// Title derives a display title from the first user message.
+// Title 从第一条用户消息推导展示标题。
 func (s *Session[M]) Title() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,5 +157,5 @@ func (s *Session[M]) Title() string {
 			return title
 		}
 	}
-	return "New Session"
+	return "新会话"
 }
