@@ -14,7 +14,7 @@ import (
 	"github.com/LouYuanbo1/spider-nest/spider/hijack"
 	"github.com/LouYuanbo1/spider-nest/web"
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/stealth"
 )
 
 // SpiderAPI 蜘蛛的"日常 API 面"：任何能被蜘蛛巢(Nest)当作"一只蜘蛛"对待的抓取单元，
@@ -176,8 +176,10 @@ func NewWeaver(opts ...WeaverOption) (*Weaver, error) {
 
 // createWeb 为网池创建一张可用网（Web）：在蜘蛛自己的浏览器实例上新建一张
 // 空白标签页作为"网"，并注入蜘蛛的人类化与超时行为配置。
+// 页面经由 stealth.Page 创建：其对每张新页面调用 EvalOnNewDocument 注入 stealth JS，
+// 抹平 navigator.webdriver / window.chrome / plugins 等可被反爬识别的自动化特征。
 func (s *Weaver) createWeb() (*web.Web, error) {
-	page, err := s.browser.Page(proto.TargetCreateTarget{})
+	page, err := stealth.Page(s.browser)
 	if err != nil {
 		return nil, fmt.Errorf("创建页面失败: %v", err)
 	}
