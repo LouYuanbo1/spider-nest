@@ -2,7 +2,7 @@ package config
 
 import "time"
 
-// HijackHandlerType 预设的 hijack handler 行为，通过 yaml 的 handler 字段显式选择。
+// HijackHandlerType 预设的 hijack handler 行为，通过 HijackConfig.Handler 字段显式选择。
 //   - monitor：真实监听，全量采集请求方法/URL/请求头/请求体并放行到真实网络；
 //   - echo：把命中请求的方法/URL/query 回喂成 JSON 假响应；
 //
@@ -17,8 +17,9 @@ const (
 )
 
 // HijackConfig 一条声明式的 hijack 规则，对应 spider/hijack.HijackRule。
-// 行为由 Handler 字段选择（见 HijackHandlerType），命中后交给对应 handler 处理；
-// 各 handler 的专属参数放在同名 YAML 子节点（目前 monitor 无需参数）。
+// 行为由 Handler 字段选择（见 HijackHandlerType），命中后交给对应 handler 处理。
+// 规则通过 nest.Crawl / nest.BorrowSpider 的 hijackCfgs 变参传入（按"借-用-还"
+// 窗口生效），亦可手动构造 spider.WithHijack + hijack.HijackRule 以便自定义逻辑。
 type HijackConfig struct {
 	Name    string `yaml:"name"`    // 规则名，仅用于可读性/日志
 	Pattern string `yaml:"pattern"` // URL 匹配模式，如 "*/api/user*"（go-rod 通配语法，* 不跨 /）
@@ -41,17 +42,17 @@ type RodConfig struct {
 	UserAgent            string `yaml:"user_agent"`
 	Leakless             bool   `yaml:"leakless"`
 	Bin                  string `yaml:"bin"`
-	//禁用后台网络(后台标签页挂起的请求不下载资源)
+	//禁用后台网络（后台标签页挂起的请求不下载资源）
 	DisableBackgroundNetworking bool `yaml:"disable_background_networking"`
-	//禁用后台定时器节流(后台标签页的 setTimeout/setInterval 不被降频)
+	//禁用后台定时器节流（后台标签页的 setTimeout/setInterval 不被降频）
 	DisableBackgroundTimerThrottling bool `yaml:"disable_background_timer_throttling"`
-	//(禁用后台窗口遮挡)
+	//禁用后台窗口遮挡
 	DisableBackgroundingOccludedWindows bool `yaml:"disable_backgrounding_occluded_windows"`
-	//(禁用渲染器后台)
+	//禁用渲染器后台处理
 	DisableRendererBackgrounding bool `yaml:"disable_renderer_backgrounding"`
-	//(远程调试端口)
+	//远程调试端口
 	BasicRemoteDebuggingPort int `yaml:"basic_remote_debugging_port"`
-	//(开启CDP通信追踪)
+	//开启 CDP 通信追踪
 	Trace bool `yaml:"trace"`
 }
 
@@ -61,13 +62,6 @@ type SpiderConfig struct {
 	OperationTimeout time.Duration `yaml:"operation_timeout"`
 	PagePoolLimit    int           `yaml:"page_pool_limit"`
 }
-
-/*
-type SpiderConfig struct {
-	Hijack        []HijackConfig `yaml:"hijack"`
-	BrowserConfig `yaml:",inline"`
-}
-*/
 
 type ModelConfig struct {
 	APIKey string `yaml:"api_key"`

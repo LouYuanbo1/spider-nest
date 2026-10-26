@@ -12,7 +12,7 @@ import (
 
 // 本文件只保留"Weaver 侧的 hijack 编排"：
 //   - WithHijack：以"借-用-还"为单位，临时挂起一套浏览器级监听、用完即撤；
-//   - buildHandlerByConfig / RulesFromConfig：从声明式 config 装配成 hijack 规则。
+//   - enableRouter / buildHandlerByConfig / RulesFromConfig：装配合法 hijack 规则。
 //
 // 其余纯机制（HijackHandler / HijackRule / 三种 Capture / 各工厂 handler）已在
 // spider/hijack 叶包中，供 fetch / direct / cmd 等消费者共用而不必背负整个 Spider。
@@ -33,7 +33,7 @@ func buildHandlerByConfig(c config.HijackConfig, logger *slog.Logger) (hijack.Hi
 }
 
 // RulesFromConfig 把声明式配置编译成一组合法的 hijack.HijackRule。
-// 供 Nest 在借蜘蛛时按需将该规则挂到目标蜘蛛上（见 nest.Borrow）。
+// 供 Nest 在借蜘蛛时按需将该规则挂到目标蜘蛛上（见 nest.BorrowSpider）。
 // 每条规则按 c.Handler 挑选预设行为编译；无法识别即报错，避免启动时静默放行。
 func RulesFromConfig(cfg []config.HijackConfig, logger *slog.Logger) ([]hijack.HijackRule, error) {
 	rules := make([]hijack.HijackRule, 0, len(cfg))
@@ -55,7 +55,7 @@ func RulesFromConfig(cfg []config.HijackConfig, logger *slog.Logger) ([]hijack.H
 }
 
 // enableRouter 校验并装配一组规则到一把新建的独立 HijackRouter 上（Add 齐即返回，不 Run）。
-// 供 WithHijack（临时窗口）与 EnableHijack（常驻）共用同一套校验/装配逻辑。
+// 供 WithHijack 装配监听规则时使用；空规则不经此路径（见 WithHijack）。
 func (s *Weaver) enableRouter(rules []hijack.HijackRule) (*rod.HijackRouter, error) {
 	router := s.browser.HijackRequests()
 	for _, r := range rules {
@@ -72,33 +72,22 @@ func (s *Weaver) enableRouter(rules []hijack.HijackRule) (*rod.HijackRouter, err
 	return router, nil
 }
 
-// EnableHijack 按 Spider 契约把监听以"常驻"方式挂上，返回一个撤销闭包。
-// 监听一经挂起，可在同一蜘蛛借用期内跨多次操作持续生效，直到调用 stop 才撤。
-func (s *Weaver) EnableHijack(rules []hijack.HijackRule) (stop func(), err error) {
-	if len(rules) == 0 {
-		return func() {}, nil
-	}
-	router, err := s.enableRouter(rules)
-	if err != nil {
-		return nil, err
-	}
-	go router.Run() // 全部规则 Add 完毕后才启动监听
-	return func() { router.Stop() }, nil
-}
-
 // WithHijack 为一次"借-用-还"在蜘蛛上挂起一套监听，fn 结束即自动撤除。
-// 它是 EnableHijack 的便捷窗口封装：挂上常驻监听，执行 fn，fn 结束后撤销。
+// 回调 fn 在前、监听规则为可选变参（与 Nest.BorrowSpider 的 fn 在前约定对齐）：
+// 规则为空时 fn 原样执行（不启用 Fetch 域、不关缓存）。
 // 浏览器级拦截对后台/未聚焦标签页同样生效（page 级拦截会因渲染层节流失效），
 // 同一次监听内的所有网（页面）共享这套规则。
 //
 // 回调 fn 会拿到蜘蛛本体（本接口自身），意在把"hijack 之后紧接着的动作"与这只
-// 蜘蛛显式绑定：如 fn 里再 Borrow/Crawl，读起来就是"在这只蜘蛛上监听并行事"。
-// 规则为空时 fn 原样执行（不启用 Fetch 域、不关缓存）。
-func (s *Weaver) WithHijack(rules []hijack.HijackRule, fn func(SpiderAPI) error) error {
-	stop, err := s.EnableHijack(rules)
-	if err != nil {
-		return err
+// 蜘蛛显式绑定：如 fn 里再 BorrowWeb/Crawl，读起来就是"在这只蜘蛛上监听并行事"。
+func (s *Weaver) WithHijack(fn func(SpiderAPI) error, rules ...hijack.HijackRule) error {
+	if len(rules) != 0 {
+		router, err := s.enableRouter(rules)
+		if err != nil {
+			return err
+		}
+		go router.Run() // 全部规则 Add 完毕后才启动监听
+		defer router.Stop()
 	}
-	defer stop()
 	return fn(s)
 }

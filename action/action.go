@@ -1,4 +1,16 @@
-package web
+// Package action 是 spider-nest 全网共享的动作协议层。
+//
+// 它只描述"做什么"（Action）与"做完返回什么"（ActionResult），不涉及任何执行细节，
+// 是各模块之间传递任务与结果的统一中立契约：
+//   - web   依赖本包，把动作翻译成具体浏览器操作（纯执行器）；
+//   - nest / spider 把 []action.Action 下发给 web 执行，并把结果 []action.ActionResult 回传；
+//   - agent/tools 依据动作结构体上的 JSON-Schema tag 生成给 LLM 调用的工具契约；
+//   - 解析核心（action.Spec + action.ParseActions，见 parse.go）对所有格式/配置类型无感知，
+//     是"配置文件无关"的动作解析器——要支持 YAML/JSON 等前端，只需各自实现一个满足 Spec
+//     的 spec 前端（如声明式 YAML 的 yamlSpec）并把动作描述喂给 ParseActions 即可复用整套校验。
+//
+// 依赖方向始终指向本包，本包不反向依赖任何上层模块（仅依赖 go-rod 的 proto 数据类型）。
+package action
 
 import "github.com/go-rod/rod/lib/proto"
 
@@ -61,7 +73,7 @@ type Input struct {
 	Clear    bool         `json:"clear" jsonschema:"description=是否先清空输入框原有内容再输入,默认为false"`
 }
 
-func (c *Input) isAction() {
+func (in *Input) isAction() {
 }
 
 type InputByAXTree struct {
@@ -70,7 +82,7 @@ type InputByAXTree struct {
 	Clear bool   `json:"clear" jsonschema:"description=是否先清空输入框原有内容再输入，默认为false"`
 }
 
-func (c *InputByAXTree) isAction() {
+func (in *InputByAXTree) isAction() {
 }
 
 type Scroll struct {

@@ -1,0 +1,10 @@
+# 示例声明式动作序列：由 cmd/demo 加载，经 action.ParseActions 解析后按序执行。
+# 每步必须带 type 字段，支持的 type 见 action/parse.go。
+actions:
+  - type: navigate
+    url: https://baidu.com
+
+  - type: get_ax_content
+
+  - type: scroll
+    scroll_y: 400

@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -25,7 +26,7 @@ func getFullAXTree(page *rod.Page) (*proto.AccessibilityGetFullAXTreeResult, err
 // 改用 getFullAXTree 一次取回全量 AX 节点，在结果里按 role/name 过滤，稳定可靠。
 func resolveAXNodeID(
 	page *rod.Page,
-	role RoleType,
+	role action.RoleType,
 	name string,
 	nth int,
 ) (proto.DOMBackendNodeID, error) {
@@ -33,20 +34,6 @@ func resolveAXNodeID(
 	if err != nil {
 		return 0, fmt.Errorf("获取完整 AX 树失败: %w", err)
 	}
-
-	/*
-		// 临时调试：打印非忽略、可桥接到 DOM 节点的去重 role 分布，确认目标元素真实 role。
-		{
-			roleCount := map[string]int{}
-			for _, node := range fullTree.Nodes {
-				if node.Ignored || node.BackendDOMNodeID == 0 || node.Role == nil {
-					continue
-				}
-				roleCount[node.Role.Value.Str()]++
-			}
-			fmt.Println("AX role 分布:", roleCount)
-		}
-	*/
 
 	// 过滤：跳过被忽略/无法桥接到 DOM 的节点，只保留匹配 role 的。
 	var roleMatches []*proto.AccessibilityAXNode
@@ -82,7 +69,7 @@ func resolveAXNodeID(
 
 func getNodeIDByRoleAndName(
 	page *rod.Page,
-	role RoleType,
+	role action.RoleType,
 	name string,
 	nth int,
 ) (proto.DOMBackendNodeID, error) {

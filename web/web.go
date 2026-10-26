@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/go-rod/rod"
 )
 
@@ -66,7 +67,7 @@ func New(page *rod.Page, opts ...Option) *Web {
 	return w
 }
 
-func (w *Web) timeoutWrapper[T Action](
+func (w *Web) timeoutWrapper[T action.Action](
 	ctx context.Context,
 	action T,
 	f func(ctx context.Context, action T) error,
@@ -78,7 +79,7 @@ func (w *Web) timeoutWrapper[T Action](
 
 // timeoutResultWrapper 与 timeoutWrapper 相同，区别在于内部函数返回 (V, error)，
 // 用于包装需取回具体值（如 HTML）的超时控制。
-func (w *Web) timeoutResultWrapper[T Action, V any](
+func (w *Web) timeoutResultWrapper[T action.Action, V any](
 	ctx context.Context,
 	action T,
 	f func(ctx context.Context, action T) (V, error),
@@ -90,58 +91,58 @@ func (w *Web) timeoutResultWrapper[T Action, V any](
 
 // RunAction 在网持有的页面上执行单个动作，并把"是否生效"（如输入是否真正写入成功）
 // 与"返回内容"（如 HTML/JS 结果）如实记录进结构化的 ActionResult。
-func (w *Web) RunAction(ctx context.Context, action Action) (ActionResult, error) {
-	actionName := actionName(action)
+func (w *Web) RunAction(ctx context.Context, a action.Action) (action.ActionResult, error) {
+	actionName := actionName(a)
 	var err error
 	effective := true
 	value := ""
 	artifact := ""
-	switch a := action.(type) {
-	case *Navigate:
+	switch a := a.(type) {
+	case *action.Navigate:
 		err = w.Navigate(ctx, a)
-	case *Click:
+	case *action.Click:
 		err = w.DoClick(ctx, a)
-	case *ClickByAXTree:
+	case *action.ClickByAXTree:
 		err = w.DoClickByAX(ctx, a)
-	case *Input:
+	case *action.Input:
 		effective, err = w.DoInput(ctx, a) // bool = 输入框是否已真正写入目标文本
-	case *InputByAXTree:
+	case *action.InputByAXTree:
 		effective, err = w.DoInputByAX(ctx, a)
-	case *Scroll:
+	case *action.Scroll:
 		err = w.DoScroll(ctx, a)
-	case *JavaScript:
+	case *action.JavaScript:
 		value, err = w.DoJavaScript(ctx, a)
 		effective = err == nil && value != "" && value != "undefined"
-	case *GetHTML:
+	case *action.GetHTML:
 		value, err = w.GetHTML(ctx)
 		effective = err == nil
-	case *GetAXContent:
+	case *action.GetAXContent:
 		value, err = w.GetAXContent(ctx)
 		effective = err == nil
-	case *GetStructured:
+	case *action.GetStructured:
 		value, err = w.GetStructured(ctx)
 		effective = err == nil
-	case *GetContent:
-		switch DefaultContentMode(a.Mode) {
-		case ContentModeStructured:
+	case *action.GetContent:
+		switch action.DefaultContentMode(a.Mode) {
+		case action.ContentModeStructured:
 			value, err = w.GetStructured(ctx)
-		case ContentModeFull:
+		case action.ContentModeFull:
 			value, err = w.GetHTML(ctx)
-		case ContentModeAX:
+		case action.ContentModeAX:
 			value, err = w.GetAXContent(ctx)
 		default:
 			err = fmt.Errorf("未知的 mode=%q,可选:ax|structured|full", a.Mode)
 		}
 		effective = err == nil
-	case *GetInteractive:
+	case *action.GetInteractive:
 		value, err = w.GetInteractives(ctx)
 		effective = err == nil
-	case *GetPDF:
+	case *action.GetPDF:
 		// 流式落盘到 tp.Dir，产物路径记录在 ArtifactPath，内存 O(1)。
 		artifact, err = w.GetPDF(ctx, a)
 		effective = err == nil
 	default:
-		return ActionResult{}, fmt.Errorf("不支持的动作类型 %T", action)
+		return action.ActionResult{}, fmt.Errorf("不支持的动作类型 %T", a)
 	}
 	if err != nil {
 		// 出错时才探活（#12）：若页面确实已失效，就地标记，归还时据此销毁重建，
@@ -149,7 +150,7 @@ func (w *Web) RunAction(ctx context.Context, action Action) (ActionResult, error
 		if !w.IsActive() {
 			w.MarkBroken()
 		}
-		return ActionResult{}, err
+		return action.ActionResult{}, err
 	}
 	return w.ActionResult(ctx, actionName, value, artifact, effective), nil
 }
@@ -157,10 +158,10 @@ func (w *Web) RunAction(ctx context.Context, action Action) (ActionResult, error
 // RunActions 在网持有的页面上依次执行一系列动作，并返回每步动作的结构化结果。
 // 它是网对外暴露的总入口：Spider 拿到一张网后，把整组任务直接委托给
 // RunActions 执行，执行异常时返回出错前已成功产生的部分结果与错误。
-func (w *Web) RunActions(ctx context.Context, actions []Action) ([]ActionResult, error) {
-	results := make([]ActionResult, 0, len(actions))
-	for _, action := range actions {
-		result, err := w.RunAction(ctx, action)
+func (w *Web) RunActions(ctx context.Context, actions []action.Action) ([]action.ActionResult, error) {
+	results := make([]action.ActionResult, 0, len(actions))
+	for _, a := range actions {
+		result, err := w.RunAction(ctx, a)
 		if err != nil {
 			return results, err
 		}
@@ -169,14 +170,15 @@ func (w *Web) RunActions(ctx context.Context, actions []Action) ([]ActionResult,
 	return results, nil
 }
 
-// actionName 返回动作的简短名称（去掉包前缀），用于摘要标记，如 Navigate、DoClick 等。
-func actionName(a Action) string {
-	return strings.TrimPrefix(fmt.Sprintf("%T", a), "*web.")
+// actionName 返回动作的简短名称（去掉包前缀，如 *action.Navigate → "Navigate"），
+// 用于摘要标记，如 Navigate、Click、Input、JavaScript 等。
+func actionName(a action.Action) string {
+	return strings.TrimPrefix(fmt.Sprintf("%T", a), "*action.")
 }
 
-func (w *Web) navigate(ctx context.Context, action *Navigate) error {
+func (w *Web) navigate(ctx context.Context, a *action.Navigate) error {
 	page := w.Page.Context(ctx)
-	if err := page.Navigate(action.URL); err != nil {
+	if err := page.Navigate(a.URL); err != nil {
 		return fmt.Errorf("导航失败: %v", err)
 	}
 	if err := page.WaitLoad(); err != nil {
@@ -189,8 +191,8 @@ func (w *Web) navigate(ctx context.Context, action *Navigate) error {
 }
 
 // Navigate 在网持有的页面上导航到目标URL并等待页面加载与网络空闲。
-func (w *Web) Navigate(ctx context.Context, action *Navigate) error {
-	return w.timeoutWrapper(ctx, action, w.navigate)
+func (w *Web) Navigate(ctx context.Context, a *action.Navigate) error {
+	return w.timeoutWrapper(ctx, a, w.navigate)
 }
 
 // humanDelay 在 [min,max] 毫秒之间随机休眠，模拟人类操作间隔。

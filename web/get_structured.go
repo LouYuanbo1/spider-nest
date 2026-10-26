@@ -9,6 +9,7 @@ import (
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
+	"github.com/LouYuanbo1/spider-nest/action"
 	"golang.org/x/net/html"
 )
 
@@ -200,7 +201,7 @@ func prune(n *html.Node) bool {
 // 先对整页做内容级剪枝（去 Chrome/空壳，见 prune），再用 html-to-markdown(v2) 转换为
 // Markdown（表格/任务列表/删除线用 GFM 扩展）。相比原始 HTML 更省 token、对 LLM 更友好，
 // 同时保留标题、列表、表格、链接等结构。
-func (w *Web) getStructured(ctx context.Context, _ *GetStructured) (string, error) {
+func (w *Web) getStructured(ctx context.Context, _ *action.GetStructured) (string, error) {
 	p := w.Page.Context(ctx)
 	raw, err := p.HTML()
 	if err != nil {
@@ -240,5 +241,5 @@ func (w *Web) getStructured(ctx context.Context, _ *GetStructured) (string, erro
 }
 
 func (w *Web) GetStructured(ctx context.Context) (string, error) {
-	return w.timeoutResultWrapper(ctx, &GetStructured{}, w.getStructured)
+	return w.timeoutResultWrapper(ctx, &action.GetStructured{}, w.getStructured)
 }

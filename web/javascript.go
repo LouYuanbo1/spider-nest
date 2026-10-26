@@ -3,22 +3,27 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/go-rod/rod/lib/proto"
 )
 
+// jsRetryDelay 单次重试前的等待时长
+const jsRetryDelay = 300 * time.Millisecond
+
 // DoJavaScript 在网持有的页面上执行JS并返回序列化结果
-func (w *Web) DoJavaScript(ctx context.Context, action *JavaScript) (string, error) {
+func (w *Web) DoJavaScript(ctx context.Context, a *action.JavaScript) (string, error) {
 	page := w.Page.Context(ctx)
 	// 无参时用 async 函数表达式包裹（而非立即执行的 IIFE）：
 	// rod 的 Eval 会以 .apply(this, arguments) 调用该函数表达式并 awaitPromise，
 	// 若写成 IIFE 则会得到一个 Promise，再被 .apply 调用时报 "apply is not a function"。
 	var source string
-	if len(action.Args) > 0 {
-		source = action.JS
+	if len(a.Args) > 0 {
+		source = a.JS
 	} else {
-		source = "async () => { " + action.JS + "\n}"
+		source = "async () => { " + a.JS + "\n}"
 	}
 
 	var result *proto.RuntimeRemoteObject
@@ -26,17 +31,17 @@ func (w *Web) DoJavaScript(ctx context.Context, action *JavaScript) (string, err
 	// 模型生成的 JS 在 SPA 页面（如 B 站）上偶发失败，最多重试一次，
 	// 避免一次偶发异常就中断整次抓取。
 	for attempt := range 2 {
-		result, err = page.Eval(source, action.Args...)
+		result, err = page.Eval(source, a.Args...)
 		if err == nil {
 			break
 		}
-		fmt.Println("JS执行失败，重试中", "js", action.JS, "err", err)
+		slog.Debug("JS执行失败，重试中", "js", a.JS, "err", err)
 		if attempt == 0 {
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(jsRetryDelay)
 		}
 	}
 	if err != nil {
-		fmt.Println("JS执行失败", "js", action.JS, "err", err)
+		slog.Warn("JS执行失败", "js", a.JS, "err", err)
 		return "", fmt.Errorf("JS执行失败: %v", err)
 	}
 

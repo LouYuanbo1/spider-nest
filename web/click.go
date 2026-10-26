@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -34,35 +35,38 @@ func (w *Web) clickElement(el *rod.Element) error {
 	return clickLikeHuman(el)
 }
 
-func (w *Web) doClick(ctx context.Context, action *Click) error {
+func (w *Web) doClick(ctx context.Context, a *action.Click) error {
 	page := w.Page.Context(ctx)
 	var el *rod.Element
 	var err error
-	switch action.Type {
-	case SelectorTypeCSS:
-		el, err = page.Element(action.Selector)
-	case SelectorTypeXPath:
-		el, err = page.ElementX(action.Selector)
+	switch a.Type {
+	case action.SelectorTypeCSS:
+		el, err = page.Element(a.Selector)
+	case action.SelectorTypeXPath:
+		el, err = page.ElementX(a.Selector)
 	default:
-		return fmt.Errorf("未知选择器类型 %q", action.Type)
+		return fmt.Errorf("未知选择器类型 %q", a.Type)
 	}
 	if err != nil {
-		return fmt.Errorf("未找到元素 %q: %v", action.Selector, err)
+		return fmt.Errorf("未找到元素 %q: %v", a.Selector, err)
 	}
 	return w.clickElement(el)
 }
 
 // DoClick 在网持有的页面上以 CSS 选择器点击
-func (w *Web) DoClick(ctx context.Context, action *Click) error {
-	return w.timeoutWrapper(ctx, action, w.doClick)
+func (w *Web) DoClick(ctx context.Context, a *action.Click) error {
+	return w.timeoutWrapper(ctx, a, w.doClick)
 }
 
-func (w *Web) doClickByAX(ctx context.Context, action *ClickByAXTree) error {
+func (w *Web) doClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
 	page := w.Page.Context(ctx)
 	var err error
-	backendDOMNodeID := action.BackendDOMNodeID
-	if action.BackendDOMNodeID == 0 && (action.Role != "" || action.Name != "") {
-		backendDOMNodeID, err = getNodeIDByRoleAndName(page, action.Role, action.Name, action.Nth)
+	backendDOMNodeID := a.BackendDOMNodeID
+	if backendDOMNodeID == 0 {
+		if a.Role == "" && a.Name == "" {
+			return fmt.Errorf("ClickByAXTree 缺少定位信息：node_id、role、name 至少提供一个")
+		}
+		backendDOMNodeID, err = getNodeIDByRoleAndName(page, a.Role, a.Name, a.Nth)
 		if err != nil {
 			return fmt.Errorf("获取节点 %d 失败: %v", backendDOMNodeID, err)
 		}
@@ -76,6 +80,6 @@ func (w *Web) doClickByAX(ctx context.Context, action *ClickByAXTree) error {
 
 // DoClickByAX 在网持有的页面上通过可访问性语义（role/name）或后端 DOM 节点 ID 精准点击，
 // 避免同名元素/选择器歧义
-func (w *Web) DoClickByAX(ctx context.Context, action *ClickByAXTree) error {
-	return w.timeoutWrapper(ctx, action, w.doClickByAX)
+func (w *Web) DoClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
+	return w.timeoutWrapper(ctx, a, w.doClickByAX)
 }

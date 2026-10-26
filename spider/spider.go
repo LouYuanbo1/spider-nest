@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/LouYuanbo1/spider-nest/config"
 	"github.com/LouYuanbo1/spider-nest/spider/hijack"
 	"github.com/LouYuanbo1/spider-nest/web"
@@ -21,58 +22,30 @@ import (
 // 只要补全此契约即可无缝并入同一巢中复用/隔离。
 //
 // 当前契约以"浏览器驱动"为核心（借网/织动作），对非浏览器的直连蜘蛛而言
-// Acquire/Borrow/Crawl 一族并不适用。后续出现非浏览器蜘蛛时，可视情况把
+// Acquire/BorrowWeb/Crawl 一族并不适用。后续出现非浏览器蜘蛛时，可视情况把
 // 契约收敛为更窄的核心再分层，现阶段忠实反映 Weaver 的日常公开行为。
 //
-// 它刻意独立于常驻监听能力（PersistentHijacker）：DSL 与平时使用只需触碰这套
-// 日常 API，不必关心"常驻监听"这种需要主动管理撤销时机的重能力。
+// 它刻意不承载"常驻监听"的编排逻辑，而是把它封装在 WithHijack（即用即撤）
+// 窗口内：普通调用方只需触碰这套日常 API，不必关心监听 goroutine 的启停。
 type SpiderAPI interface {
 	Acquire() (*web.Web, error)
 	// AcquireCtx 与 Acquire 语义相同，但支持通过 ctx 取消"池满等待"；
 	// 关闭后的蜘蛛也会立即返回 ErrClosed，而非永久阻塞。
 	AcquireCtx(ctx context.Context) (*web.Web, error)
 	Release(w *web.Web) error
-	Borrow(fn func(*web.Web) error) error
-	Crawl(ctx context.Context, actions []web.Action) ([]web.ActionResult, error)
-	CrawlConcurrent(ctx context.Context, actionGroups [][]web.Action) ([][]web.ActionResult, error)
+	// BorrowWeb 借用一张网执行 fn，并在结束后自动归还（网层入口）。
+	BorrowWeb(fn func(*web.Web) error) error
+	Crawl(ctx context.Context, actions []action.Action) ([]action.ActionResult, error)
+	CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action) ([][]action.ActionResult, error)
 	Close() error
 	IsActive() bool
-	// WithHijack 在 fn 执行期间挂起一套监听并自动撤除（一次操作窗口的便捷封装）。
-	WithHijack(rules []hijack.HijackRule, fn func(SpiderAPI) error) error
-}
-
-// 说明：蜘蛛的"常驻监听"能力归属具体实现，刻意不放进 SpiderAPI 契约。
-// 它把监听挂上后可在同一蜘蛛借用期内跨多次操作持续生效，直到调用 stop 才撤，需要
-// 调用方主动管理 stop 的时机。正因如此，它不适合作为所有持有 SpiderAPI 者都能触碰的
-// 默认入口——由知道具体实现的地方（如 Nest）把该能力捕获成闭包，注入给真正需要的
-// 消费者（如 AcquiredSpider）。WithHijack 是面向普通调用方的安全窗口封装：即用即撤。
-
-// PersistentHijacker 是可"常驻监听"的蜘蛛能力契约：EnableHijack 把一组规则以常驻
-// 方式挂到蜘蛛上，返回撤销闭包与错误。监听归属蜘蛛生命周期，跨多次操作持续生效，
-// 直到调用者主动 stop 才撤——是"持久"而非"永久"：撤销时机始终握在调用方手里。
-//
-// 它刻意独立于 SpiderAPI 契约：并非所有蜘蛛都支持常驻监听，但凡是支持的（如 *Weaver、
-// 以及 Nest 的一切蜘蛛）都以本接口为统一载体。它亦是构成完整 Spider 契约的横切面，供
-// 需要完整能力的消费者按需合并引用。
-type PersistentHijacker interface {
-	EnableHijack(rules []hijack.HijackRule) (stop func(), err error)
-}
-
-// Spider 是"能常驻监听的蜘蛛"完整契约：日常 API 面（SpiderAPI）+ 常驻监听能力
-// （PersistentHijacker）的合并接口。构造方（如 Nest 与 AcquiredSpider）拿到一只
-// 实现了此接口的蜘蛛后，即可在编译期直接、无需断言地调用 EnableHijack——无论
-// 日常使用还是常驻监听能力，都唾手可得，无需各自独立引用两个接口。
-//
-// 它与 Nest 的泛型约束 hijackSpider[T] 呼应：后者在编译期保证巢内蜘蛛必然
-// 满足本契约，此处把这一保证收敛成单个可引用接口，供 AcquiredSpider 这类
-// 携带蜘蛛的消费者直接使用。
-type Spider interface {
-	SpiderAPI
-	PersistentHijacker
+	// WithHijack 在 fn 执行期间挂起一套监听、结束即自动撤除（一次操作窗口的便捷封装）。
+	// 回调 fn 在前、监听规则为可选变参：不需要监听时直接传 fn 即可。
+	WithHijack(fn func(SpiderAPI) error, rules ...hijack.HijackRule) error
 }
 
 // Weaver 织网蜘蛛：最普通的那种浏览器爬虫——持有浏览器实例（*rod.Browser）与网池，
-// 是 Spider 契约的基础实现。创意类比：织网蜘蛛(orb-weaver)牢牢守住一张网，
+// 是 SpiderAPI 契约的基础实现。创意类比：织网蜘蛛(orb-weaver)牢牢守住一张网，
 // 捕食源于网，本类也把所有抓取动作收敛在这几张页面上。
 //
 // 每张页面被封装成一张轻量的 web.Web（"网"）：网才真正持有并操作页面。
@@ -94,11 +67,48 @@ type Weaver struct {
 // ErrClosed 表示蜘蛛（网池）已关闭，拒绝再进行派/收网。
 var ErrClosed = errors.New("spider: 爬虫已关闭")
 
-// Weaver 完整实现 Spider 契约（日常 API + 常驻监听能力），此处锁死在编译期：
-// 若后续 Weaver 的方法集合与 Spider 契约漂移，会在此编译报错，避免带病演进。
-var _ Spider = (*Weaver)(nil)
+// WeaverOption 以"函数式选项"方式配置一只新织网蜘蛛（NewWeaver）。未设置的字段
+// 落在 config.SpiderConfig 的零值上；高级启动器参数不在预设项中时，用
+// WithConfig 从一整份 *config.SpiderConfig 批量带入配置基线。
+type WeaverOption func(*config.SpiderConfig)
 
-func NewWeaver(cfg *config.SpiderConfig) (*Weaver, error) {
+// WithConfig 用一整份 *config.SpiderConfig 作为蜘蛛配置基线（YAML 驱动场景）。
+// 可与其它 With* 选项叠加：后面的选项会覆盖 WithConfig 带入的同名字段。
+func WithConfig(cfg *config.SpiderConfig) WeaverOption {
+	return func(c *config.SpiderConfig) {
+		if cfg != nil {
+			*c = *cfg
+		}
+	}
+}
+
+// WithOperationTimeout 设置单步操作超时（默认 30s）。
+func WithOperationTimeout(d time.Duration) WeaverOption {
+	return func(c *config.SpiderConfig) { c.OperationTimeout = d }
+}
+
+// WithPagePoolLimit 设置网池容量，即单只蜘蛛内可并发的页面数（默认 1）。
+func WithPagePoolLimit(n int) WeaverOption {
+	return func(c *config.SpiderConfig) { c.PagePoolLimit = n }
+}
+
+// WithHumanize 控制在页面操作前是否模拟人类化的随机延迟等待。
+func WithHumanize(b bool) WeaverOption {
+	return func(c *config.SpiderConfig) { c.Humanize = b }
+}
+
+// WithUserMode 使用用户现有浏览器身份（不新建实例）。
+func WithUserMode(b bool) WeaverOption {
+	return func(c *config.SpiderConfig) { c.UserMode = b }
+}
+
+func NewWeaver(opts ...WeaverOption) (*Weaver, error) {
+	var cfg config.SpiderConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
 	if cfg.OperationTimeout <= 0 {
 		cfg.OperationTimeout = 30 * time.Second
 	}
@@ -136,7 +146,7 @@ func NewWeaver(cfg *config.SpiderConfig) (*Weaver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("启动浏览器失败: %v", err)
 	}
-	logger.Info("浏览器就绪", "instance", 1, "url", url)
+	logger.Info("浏览器就绪", "url", url)
 
 	browser := rod.New().ControlURL(url).Trace(cfg.Trace)
 	if err := browser.Connect(); err != nil {
@@ -214,7 +224,7 @@ func (s *Weaver) Acquire() (*web.Web, error) {
 	return s.AcquireCtx(context.Background())
 }
 
-// Release 让一张织完的网回池把网放回池中供复用，不销毁其页面。
+// Release 让一张织完的网回池：把网放回池中供复用，不销毁其页面。
 // 若网已失效（页面连接关闭导致），则销毁整张网并补建一张新的，
 // 避免劣化实例被反复复用到后续任务上。创建失败会归还空槽位避免
 // 池容量泄漏；蜘蛛已关闭时直接关页而非塞回已关闭的池。
@@ -252,12 +262,12 @@ func (s *Weaver) Release(w *web.Web) error {
 	return nil
 }
 
-// Borrow 借用一张网执行 fn，并在结束后自动归还（推荐的安全用法）。
+// BorrowWeb 借用一张网执行 fn，并在结束后自动归还（推荐的安全用法）。
 // 它等价于 Acquire + defer Release：无论 fn 正常返回还是 panic，
 // 网都会被放回池中供复用，从根上避免"借了不还"导致的池占满死锁。
 // 需要跨操作/跨 goroutine 长期持有网（如 agent 自动化会话）时，
-// 再改用 Acquire/Release。与 Nest.Borrow 结构对齐。
-func (s *Weaver) Borrow(fn func(*web.Web) error) error {
+// 再改用 Acquire/Release。与 Nest.BorrowSpider 结构对齐。
+func (s *Weaver) BorrowWeb(fn func(*web.Web) error) error {
 	w, err := s.Acquire()
 	if err != nil {
 		return err
@@ -269,25 +279,28 @@ func (s *Weaver) Borrow(fn func(*web.Web) error) error {
 // Crawl 借取一张网，把整组动作委托给那张网顺序执行，并返回每步动作的
 // 结构化结果。执行完毕后该网自动放回池中供后续任务复用（而非销毁）；
 // 失效实例也会在 Release 时被销毁重建。
-func (s *Weaver) Crawl(ctx context.Context, actions []web.Action) ([]web.ActionResult, error) {
-	w, err := s.Acquire()
-	if err != nil {
-		return nil, err
-	}
-	defer s.Release(w)
-	return w.RunActions(ctx, actions)
+func (s *Weaver) Crawl(ctx context.Context, actions []action.Action) ([]action.ActionResult, error) {
+	var results []action.ActionResult
+	err := s.BorrowWeb(
+		func(w *web.Web) error {
+			var err error
+			results, err = w.RunActions(ctx, actions)
+			return err
+		},
+	)
+	return results, err
 }
 
 // CrawlConcurrent 把多组动作分别委托给不同网并发执行，每组独占一张页面。
 func (s *Weaver) CrawlConcurrent(
 	ctx context.Context,
-	actionGroups [][]web.Action,
-) ([][]web.ActionResult, error) {
+	actionGroups [][]action.Action,
+) ([][]action.ActionResult, error) {
 	if len(actionGroups) == 0 {
 		return nil, nil
 	}
 
-	results := make([][]web.ActionResult, len(actionGroups))
+	results := make([][]action.ActionResult, len(actionGroups))
 	errs := make([]error, len(actionGroups))
 
 	var wg sync.WaitGroup
