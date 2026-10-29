@@ -39,8 +39,8 @@ func main() {
 	//    - 最多允许 3 轮"偷头+重连"。412 是 bilibili 的典型风控拦截码，一并纳入刷新。
 	client, err := spider.NewPortia(weaver,
 		spider.WithClientTimeout(15*time.Second),
-		spider.WithRetries(2),
-		spider.WithMaxRetries(3),
+		spider.WithTransportRetries(2),
+		spider.WithRefreshRounds(3),
 		// bilibili 需要先访问站点由反爬 JS 种下 buvid 指纹 Cookie，API 直连才不被 403。
 		// 预热由注入的策略执行一次，成功后偷到的头就带上了这些 Cookie。
 		spider.WithWarmup(spider.PreheatNavigate("https://www.bilibili.com/")),
