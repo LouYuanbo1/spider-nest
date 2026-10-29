@@ -11,11 +11,11 @@ import (
 )
 
 // nestSpider 是"能被巢托管"的蜘蛛类型约束：形状必须是指针 *T，且该指针实现日常
-// API 契约 spider.SpiderAPI。指针形状保证 S 必然可比较（故 s == nil 合法），判空
-// 无需反射；SpiderAPI 只需承载"借网/织动作"的日常行为即可入巢。
+// API 契约 spider.Spider。指针形状保证 S 必然可比较（故 s == nil 合法），判空
+// 无需反射；Spider 只需承载"借网/织动作"的日常行为即可入巢。
 type nestSpider[T any] interface {
 	*T
-	spider.SpiderAPI
+	spider.Spider
 }
 
 // Nest 蜘蛛巢：一座巢(Nest)里住着很多只蜘蛛(spider)。每只蜘蛛都拥有
@@ -23,7 +23,7 @@ type nestSpider[T any] interface {
 // 蜘蛛池（即浏览器池）：并发上限 = 巢内蜘蛛数。
 //
 // 泛型参数 S 是巢内蜘蛛的具体类型：它决定巢以何种类型存取蜘蛛（如 *Weaver）。
-// 约束 nestSpider 仅要求其是指针且实现日常 API 契约 spider.SpiderAPI。
+// 约束 nestSpider 仅要求其是指针且实现日常 API 契约 spider.Spider。
 //
 // 复用模型：
 //   - 并发上限 = 巢内蜘蛛数（chan 容量即上限）；
@@ -136,7 +136,7 @@ func (n *Nest[T, S]) Close() error {
 // 监听配置，按需传（零个即不监听）。有监听时由 WithHijack 为本次"借-用-还"挂起
 // 一套独立的监听 goroutine，fn 执行完（含 panic）立即撤除，蜘蛛池里的实例因此
 // 永远以"干净、不带监听"的状态被复用，多只蜘蛛不会互相重复挂监听。
-func (n *Nest[T, S]) BorrowSpider(fn func(spider.SpiderAPI) error, hijackCfgs ...config.HijackConfig) error {
+func (n *Nest[T, S]) BorrowSpider(fn func(S) error, hijackCfgs ...config.HijackConfig) error {
 	s, err := n.Acquire()
 	if err != nil {
 		return err
@@ -147,7 +147,12 @@ func (n *Nest[T, S]) BorrowSpider(fn func(spider.SpiderAPI) error, hijackCfgs ..
 	if err != nil {
 		return err
 	}
-	return s.WithHijack(fn, rules...)
+	return s.WithHijack(
+		func(spider.Spider) error {
+			return fn(s)
+		},
+		rules...,
+	)
 }
 
 // Crawl 一次性在巢内执行一组动作：借一只蜘蛛（可选挂监听）→ 顺序跑完
@@ -155,7 +160,7 @@ func (n *Nest[T, S]) BorrowSpider(fn func(spider.SpiderAPI) error, hijackCfgs ..
 // BorrowSpider + s.Crawl。hijackCfgs 可选，零个即不监听。
 func (n *Nest[T, S]) Crawl(ctx context.Context, actions []action.Action, hijackCfgs ...config.HijackConfig) ([]action.ActionResult, error) {
 	var results []action.ActionResult
-	err := n.BorrowSpider(func(s spider.SpiderAPI) error {
+	err := n.BorrowSpider(func(s S) error {
 		var err error
 		results, err = s.Crawl(ctx, actions)
 		return err
@@ -168,7 +173,7 @@ func (n *Nest[T, S]) Crawl(ctx context.Context, actions []action.Action, hijackC
 // 所有并发网共享同一套可选监听（同一只蜘蛛的一次 WithHijack 窗口）。hijackCfgs 可选。
 func (n *Nest[T, S]) CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action, hijackCfgs ...config.HijackConfig) ([][]action.ActionResult, error) {
 	var results [][]action.ActionResult
-	err := n.BorrowSpider(func(s spider.SpiderAPI) error {
+	err := n.BorrowSpider(func(s S) error {
 		var err error
 		results, err = s.CrawlConcurrent(ctx, actionGroups)
 		return err

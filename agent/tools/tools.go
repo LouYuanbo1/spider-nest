@@ -101,11 +101,15 @@ func ClickFunc(w *web.Web) func(ctx context.Context, action *action.Click) (stri
 }
 
 func NewClickTool(w *web.Web) (tool.InvokableTool, error) {
-	return utils.InferTool(
+	clickTool, err := utils.InferTool(
 		"click_tool",
 		`Click an element on the page using a specified CSS or XPath selector; 
 		use this when you know the target element's selector, e.g. button.load-more`,
 		debugTool(w.OpTimeout(), "click_tool", ClickFunc(w)))
+	if err != nil {
+		return nil, err
+	}
+	return clickTool, nil
 }
 
 func ClickByAXFunc(w *web.Web) func(ctx context.Context, action *action.ClickByAXTree) (string, error) {
@@ -124,7 +128,7 @@ func ClickByAXFunc(w *web.Web) func(ctx context.Context, action *action.ClickByA
 }
 
 func NewClickByAXTool(w *web.Web) (tool.InvokableTool, error) {
-	return utils.InferTool(
+	clickByAXTool, err := utils.InferTool(
 		"click_by_ax_tool",
 		`Click a clickable element by its node_id returned from get_interactives_tool; 
 		this is the most accurate way to click and avoids ambiguity from duplicate text/selectors. 
@@ -132,6 +136,10 @@ func NewClickByAXTool(w *web.Web) (tool.InvokableTool, error) {
 		NOTE: node_id becomes stale after a full page navigation or large DOM re-render,
 		re-run get_interactives_tool to refresh it.`,
 		debugTool(w.OpTimeout(), "click_by_ax_tool", ClickByAXFunc(w)))
+	if err != nil {
+		return nil, err
+	}
+	return clickByAXTool, nil
 }
 
 func InputFunc(w *web.Web) func(ctx context.Context, action *action.Input) (string, error) {
@@ -150,13 +158,17 @@ func InputFunc(w *web.Web) func(ctx context.Context, action *action.Input) (stri
 }
 
 func NewInputTool(w *web.Web) (tool.InvokableTool, error) {
-	return utils.InferTool(
+	inputTool, err := utils.InferTool(
 		"input_tool",
 		`Type text into an input field on the page using a specified CSS or XPath selector; 
 		use this when you know the input field's selector,
 		e.g. input.search-input or #keyword. Set clear=true to first erase existing text. 
 		Prefer input_by_ax_tool when a fresh node_id is available.`,
 		debugTool(w.OpTimeout(), "input_tool", InputFunc(w)))
+	if err != nil {
+		return nil, err
+	}
+	return inputTool, nil
 }
 
 func InputByAXFunc(w *web.Web) func(ctx context.Context, action *action.InputByAXTree) (string, error) {
@@ -175,7 +187,7 @@ func InputByAXFunc(w *web.Web) func(ctx context.Context, action *action.InputByA
 }
 
 func NewInputByAXTool(w *web.Web) (tool.InvokableTool, error) {
-	return utils.InferTool(
+	inputByAXTool, err := utils.InferTool(
 		"input_by_ax_tool",
 		`Type text into an input field by its node_id listed under "inputs" from get_interactives_tool;
 		this is the most accurate way to input and avoids ambiguity. 
@@ -183,6 +195,10 @@ func NewInputByAXTool(w *web.Web) (tool.InvokableTool, error) {
 		NOTE: node_id becomes stale after a full page navigation or large DOM re-render, 
 		re-run get_interactives_tool to refresh it.`,
 		debugTool(w.OpTimeout(), "input_by_ax_tool", InputByAXFunc(w)))
+	if err != nil {
+		return nil, err
+	}
+	return inputByAXTool, nil
 }
 
 func ScrollFunc(w *web.Web) func(ctx context.Context, action *action.Scroll) (string, error) {
