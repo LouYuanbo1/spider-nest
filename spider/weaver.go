@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LouYuanbo1/spider-nest/action"
@@ -17,6 +18,8 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-rod/stealth"
 )
+
+var _ Spider = (*Weaver)(nil)
 
 // Weaver 织网蜘蛛：最普通的那种浏览器爬虫——持有浏览器实例（*rod.Browser）与网池，
 // 是 Spider 契约的基础实现。创意类比：织网蜘蛛(orb-weaver)牢牢守住一张网，
@@ -33,9 +36,9 @@ type Weaver struct {
 	humanize  bool
 	opTimeout time.Duration
 
-	mu     sync.Mutex    // 保护 closed 标志读写
-	closed bool          // 已关闭：关闭后拒绝再派网、归还网直接关页
-	done   chan struct{} // Close 时 close，用于唤醒阻塞中的 AcquireCtx
+	closed    atomic.Bool   // 已关闭：关闭后拒绝再派网、归还网直接关页；只置位不复位
+	closeOnce sync.Once     // 保证 Close 的副作用（close(done)/清池/关浏览器）恰好执行一次
+	done      chan struct{} // Close 时 close，用于唤醒阻塞中的 AcquireCtx
 }
 
 // ErrClosed 表示蜘蛛（网池）已关闭，拒绝再进行派/收网。
@@ -168,10 +171,7 @@ func (s *Weaver) createWeb() (*web.Web, error) {
 // 通过 ctx 取消；蜘蛛关闭后立即返回 ErrClosed，而非永久阻塞（#13）。
 // 与 Nest.Acquire（派一只蜘蛛）结构对齐。
 func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Web, error) {
-	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
+	if s.closed.Load() {
 		return nil, ErrClosed
 	}
 
@@ -208,10 +208,7 @@ func (s *Weaver) Release(w *web.Web) error {
 	if w == nil {
 		return nil
 	}
-	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
+	if s.closed.Load() {
 		// 已关闭：借出的网直接关闭，不再放回（池已被回收）。
 		if w.Page != nil {
 			_ = w.Page.Close()
@@ -299,28 +296,25 @@ func (s *Weaver) CrawlConcurrent(
 // 幂等：重复调用直接返回。
 func (s *Weaver) Close() error {
 	s.logger.Info("关闭爬虫")
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	close(s.done) // 唤醒所有阻塞中的 AcquireCtx/Acquire
+	var closeErr error
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		close(s.done) // 唤醒所有阻塞中的 AcquireCtx/Acquire
 
-	// 清空池中空闲的网并关闭其页面；借出中的网由其各自的 Release 在
-	// 发现已关闭后自行关页（见 Release）。
-	n := len(s.webs)
-	for i := 0; i < n; i++ {
-		if w := <-s.webs; w != nil && w.Page != nil {
-			_ = w.Page.Close()
+		// 清空池中空闲的网并关闭其页面；借出中的网由其各自的 Release 在
+		// 发现已关闭后自行关页（见 Release）。
+		n := len(s.webs)
+		for range n {
+			if w := <-s.webs; w != nil && w.Page != nil {
+				_ = w.Page.Close()
+			}
 		}
-	}
-	s.mu.Unlock()
 
-	if s.browser != nil {
-		return s.browser.Close()
-	}
-	return nil
+		if s.browser != nil {
+			closeErr = s.browser.Close()
+		}
+	})
+	return closeErr
 }
 
 // IsActive 判断蜘蛛所连接的浏览器进程是否仍然可用（未关闭/崩溃）。
