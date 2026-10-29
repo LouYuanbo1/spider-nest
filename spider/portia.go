@@ -47,19 +47,19 @@ func (t Target) method() string {
 //  1. 优先用缓存身上"最后一次有效"的请求头走纯 HTTP 直连 —— 快、不占用浏览器；
 //  2. 直连失败，或状态码命中刷新策略（默认 403/429，即疑似被反爬拦），
 //     回退借用内部的基础蜘蛛（Spider）重新偷一套新头，再直连重试；
-//  3. 超过 MaxRetries 仍失败则返回最后一次错误。
+//  3. 超过刷新轮数（refreshRounds）仍失败则返回最后一次错误。
 type Portia struct {
 	Spider // 基础蜘蛛即"头制造机"：借它的浏览器级劫持监听/触发真实请求偷头
 
-	client  *http.Client // 纯 HTTP 直连客户端；其内部 Transport 由 PortiaOption 装配
-	retries int          // 直连出错后的重试次数（传输层层面）
+	client           *http.Client // 纯 HTTP 直连客户端；其内部 Transport 由 PortiaOption 装配
+	transportRetries int          // 传输层重试：单次直连出错后，复用同一套请求头重试的次数
 
 	mu     sync.Mutex
 	cached map[string]*hijack.RequestCapture // 按 URL 记忆"最后有效"的请求头快照
 
-	maxRetries int              // 一次 Fetch 内最多重偷头+直连的刷新轮数
-	refreshSet map[int]struct{} // 命中这些状态码视为需要刷新（反爬信号）
-	logger     *slog.Logger
+	refreshRounds int              // 刷新轮数：一次 Fetch 内最多"重偷头+直连"的回退次数
+	refreshSet    map[int]struct{} // 命中这些状态码视为需要刷新（反爬信号）
+	logger        *slog.Logger
 
 	preheatOnce sync.Once   // 保证预热至多执行成功一次；失败不置位（见 doPreheat 的 recover 模式）
 	preheat     PreheatFunc // 偷头前需先建立站点上下文的可选策略（如种指纹 Cookie）；nil 则跳过
@@ -68,10 +68,10 @@ type Portia struct {
 // PortiaOption 构造函数选项，沿用 Functional Option 风格。
 type PortiaOption func(*Portia)
 
-// WithMaxRetries 设置一次 Fetch 内"重偷头并直连"的刷新轮数（默认 0，即只试一次）。
-// 注意：它控制"偷头回退"的次数，与传输层重试 WithRetries 语义不同，勿混淆。
-func WithMaxRetries(n int) PortiaOption {
-	return func(c *Portia) { c.maxRetries = n }
+// WithRefreshRounds 设置一次 Fetch 内"重偷头并直连"的刷新轮数（默认 0，即只试一次）。
+// 注意：它控制"偷头回退"的次数，与传输层重试 WithTransportRetries 语义不同，勿混淆。
+func WithRefreshRounds(n int) PortiaOption {
+	return func(c *Portia) { c.refreshRounds = n }
 }
 
 // WithRefreshStatuses 覆盖"触发刷新"的状态码集合。传空则关闭基于状态码的刷新
@@ -125,10 +125,11 @@ func WithClientTimeout(d time.Duration) PortiaOption {
 	}
 }
 
-// WithRetries 设置直连出错后的重试次数（默认 0，即不重试）。注意：它控制"传输层重试"，
-// 与偷头回退轮数 WithMaxRetries 语义不同，勿混淆。
-func WithRetries(n int) PortiaOption {
-	return func(c *Portia) { c.retries = n }
+// WithTransportRetries 设置传输层重试：单次直连出错后复用同一套请求头重试的次数
+// （默认 0，即不重试）。注意：它控制"传输层重试"，与偷头回退轮数 WithRefreshRounds
+// 语义不同，勿混淆。
+func WithTransportRetries(n int) PortiaOption {
+	return func(c *Portia) { c.transportRetries = n }
 }
 
 // WithProxy 给内部 http.Client 的 Transport 装配出向代理（可用于出口切换/IP 轮换）。
@@ -160,12 +161,12 @@ func NewPortia(base Spider, opts ...PortiaOption) (*Portia, error) {
 		return nil, errors.New("portia: 底层 Spider 不能为空")
 	}
 	p := &Portia{
-		Spider:     base,
-		client:     &http.Client{Transport: &http.Transport{}},
-		cached:     make(map[string]*hijack.RequestCapture),
-		maxRetries: 0,
-		refreshSet: map[int]struct{}{403: {}, 429: {}},
-		logger:     slog.Default(),
+		Spider:        base,
+		client:        &http.Client{Transport: &http.Transport{}},
+		cached:        make(map[string]*hijack.RequestCapture),
+		refreshRounds: 0,
+		refreshSet:    map[int]struct{}{403: {}, 429: {}},
+		logger:        slog.Default(),
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -273,7 +274,7 @@ func (p *Portia) Fetch(ctx context.Context, t Target) (*http.Response, error) {
 			p.invalidate(t)
 		}
 
-		if attempt >= p.maxRetries {
+		if attempt >= p.refreshRounds {
 			if lastErr == nil {
 				lastErr = errors.New("直连未返回结果")
 			}
@@ -418,13 +419,13 @@ func (p *Portia) request(ctx context.Context, cap *hijack.RequestCapture) (*http
 	return req, nil
 }
 
-// do 通过内部 *http.Client 的高级 Do 发出请求。出错时按 retries 重试（重试复用
+// do 通过内部 *http.Client 的高级 Do 发出请求。出错时按 transportRetries 重试（重试复用
 // 原始请求头，重读一次 body）。请求级 Context 沿用调用方（即上游 ctx），用于取消；
 // 客户端配置的 timeout 落在 http.Client.Timeout 上，覆盖"连接 + 读响应体"全程，
 // 因此 do 返回后不再手动 cancel——否则调用方读 resp.Body 时会撞上 context canceled。
 func (p *Portia) do(req *http.Request) (*http.Response, error) {
 	var lastErr error
-	for attempt := 0; attempt <= p.retries; attempt++ {
+	for attempt := 0; attempt <= p.transportRetries; attempt++ {
 		clone := req.Clone(req.Context())
 		// http.NewRequest 对字符串 Reader 已设置 GetBody，重试时据此重建一次 body。
 		if attempt > 0 && req.GetBody != nil {

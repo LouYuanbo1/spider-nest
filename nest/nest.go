@@ -13,7 +13,7 @@ import (
 // nestSpider 是"能被巢托管"的蜘蛛类型约束：形状必须是指针 *T，且该指针实现日常
 // API 契约 spider.Spider。指针形状保证 S 必然可比较（故 s == nil 合法），判空
 // 无需反射；Spider 只需承载"借网/织动作"的日常行为即可入巢。
-type nestSpider[T any] interface {
+type NestSpider[T any] interface {
 	*T
 	spider.Spider
 }
@@ -41,7 +41,7 @@ type nestSpider[T any] interface {
 // 池的实现与 go-rod 的 generic Pool 一致：内部就是一个预填 nil 槽位的
 // 有缓冲 chan，取到 nil 就新建。这里不直接复用 rod.Pool，因为创建失败时还会
 // 吞掉通道容量。故用同一思路自行实现。
-type Nest[T any, S nestSpider[T]] struct {
+type Nest[T any, S NestSpider[T]] struct {
 	logger  *slog.Logger
 	spiders chan S            // 蜘蛛池：每只蜘蛛独占一个浏览器进程
 	create  func() (S, error) // 建蜘蛛工厂：由调用方按具体类型与配置提供
@@ -56,7 +56,7 @@ type Nest[T any, S nestSpider[T]] struct {
 // 通道预填 spiderSize 个 nil 槽位（借用 rod.Pool 的做法）：空槽表示"可取
 // 出并新建"，因此 Acquire 天然可阻塞——所有槽位都被占用时取不到即等待。
 // 浏览器按需惰性启动，只有被 Acquire 取出并新建的蜘蛛才真正拉起 Chrome。
-func NewNest[T any, S nestSpider[T]](spiderSize int, create func() (S, error)) (*Nest[T, S], error) {
+func NewNest[T any, S NestSpider[T]](spiderSize int, create func() (S, error)) (*Nest[T, S], error) {
 	if spiderSize <= 0 {
 		return nil, errors.New("spiderSize 必须大于 0")
 	}
