@@ -15,7 +15,7 @@ import (
 // main 演示从 YAML 加载 Spider 配置，并从另一份 YAML 解析声明式动作后执行抓取。
 // 运行（在项目根目录下）：
 //
-//	go run ./cmd/demo
+//	go run ./cmd/parse
 func main() {
 	cfgPath := flag.String("config", "config/config.yaml", "spider 配置 yaml 路径")
 	actionsPath := flag.String("actions", "cmd/parse/actions.yaml", "声明式动作 yaml 路径")

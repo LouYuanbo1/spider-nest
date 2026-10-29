@@ -34,16 +34,17 @@ spider-nest/
 │   └── nest.go              # 巢：蜘蛛池（多浏览器并发），Acquire/Release/Borrow
 │
 ├── spider/
-│   ├── spider.go            # Weaver：单浏览器实例 + 页面网池；SpiderAPI 契约
+│   ├── spider.go            # Spider API 契约（"借-用-还"一只蜘蛛的接口）
+│   ├── weaver.go            # Weaver：单浏览器实例 + 页面网池（Spider 的基础实现）
+│   ├── portia.go            # Portia：聪明直连蜘蛛（浏览器当"头制造机"，纯 HTTP 直连 + 失效回退）
 │   ├── option.go            # Chrome 启动器选项函数（headless/sandbox/UA/窗口 等）
 │   ├── hijack.go            # Weaver 侧 hijack 编排：WithHijack(即用即撤窗口)
 │   ├── hijack/              # 叶包：HijackRule / 三种 Capture / 各工厂 handler（跨包共用不背蜘蛛）
-│   ├── direct/              # 叶包：聪明直连蜘蛛（浏览器只当"头制造机"，纯 HTTP 直连复用 + 失效回退）
-│   ├── option_test.go / hijack_test.go  # 单元测试
+│   └── option_test.go / hijack_test.go  # 单元测试
 │
 ├── action/                  # 全网共享的动作协议层（类型定义，不含执行）
-│   ├── action.go            # 动作类型：Navigate/Click/Input/Scroll/JavaScript/
-│   │                        #   GetHTML/GetAXContent/GetStructured/GetInteractive/GetPDF
+│   ├── action.go            # 动作类型：Navigate/Click/ClickByAXTree/Input/InputByAXTree/
+│   │                        #   Scroll/JavaScript/GetContent/GetInteractive/GetPDF
 │   ├── parse.go             # 声明式动作解析核心（Spec + ParseActions），格式无关
 │   ├── specs.go             # YAML / JSON 两种格式前端，复用 ParseActions 开放给命令入口/测试
 │   └── result.go            # 结构化 ActionResult（协议响应侧）
@@ -223,22 +224,29 @@ results, err := n.Crawl(ctx, actions)
 fmt.Println(results)
 
 // BorrowSpider：需要借蜘蛛做更复杂编排时，明确定位拿蜘蛛本体
-err := n.BorrowSpider(func(s spider.SpiderAPI) error {
+err := n.BorrowSpider(func(s spider.Spider) error {
     _, err := s.Crawl(ctx, actions)
     return err
 })
 ```
 
-### 4. 聪明直连（direct）：把浏览器当「头制造机」复用
+### 4. 聪明直连（Portia）：把浏览器当「头制造机」复用
 
-> `spider/direct` 与浏览器解耦：先用浏览器捕获一套带实时 Cookie/反爬签名的请求头，
-> 之后直接走纯 HTTP 直连复用，快、不占页面；遇 403/429 再回退重新偷头。
+> 先用浏览器捕获一套带实时 Cookie/反爬签名的请求头，之后直接走纯 HTTP 直连复用，
+> 快、不占页面；遇 403/429 再回退重新偷头（[cmd/direct/main.go](cmd/direct/main.go) 有完整演示）。
 
 ```go
-fetcher := direct.NewFetcher(direct.WithTimeout(30 * time.Second))
-src := direct.NewSpiderHeaderSource(spiderInstance) // SpiderAPI 即可
-cli := direct.New(fetcher, src, direct.WithMaxRetries(2))
-resp, err := cli.Fetch(ctx, direct.Target{Method: "GET", URL: "https://api.x.com/res"})
+import "github.com/LouYuanbo1/spider-nest/spider"
+
+// base 作为"头制造机"（一只普通 Weaver），Portia 借它偷头、走纯 HTTP 直连。
+base, _ := spider.NewWeaver(spider.WithConfig(cfg.Spider))
+cli, _ := spider.NewPortia(base,
+    spider.WithTimeout(30*time.Second),
+    spider.WithMaxRetries(2),
+)
+resp, err := cli.Fetch(ctx, spider.Target{Method: "GET", URL: "https://api.x.com/res"})
+if err != nil { /* ... */ }
+defer resp.Body.Close()
 ```
 
 ### 5. 用智能体做多轮对话
@@ -402,9 +410,9 @@ results, err := s.Crawl(ctx, actions)   // s 见例 1
 - agent 具持执行任意 JavaScript 的能力（`javascript_tool`）。若页面内容可控/含恶意脚本，配合不安全的 prompt 输入，理论上可被诱导执行危险操作。
 - 请**仅向可信的受控输入**开放自主 agent，或自行裁剪工具集（编辑 `agent/agent.go` 中 `newSpiderTools` 的注册表）以关闭 `javascript` / 其它高危工具。
 
-### 🔎 `spider/direct` 直连蜘蛛（两点留意）
-- **敏感请求头缓存无过期**：`direct.Client` 会把捕获的请求头快照（含 **Cookie / Authorization** 等）按 URL 缓存在内存中，静默重放到后续直连，直到主动 `Clear` / `Fresh` 或命中状态码刷新策略。它**不会自动过期**，长期运行的健壮性程序应在会话切换后调用 `Clear(url)` / `Fresh(...)`，避免把旧会话的登录态错误地重放到新请求。
-- **默认无直连超时**：`direct.NewFetcher()` 默认持有「无超时」的 `http.Client`，若调用方 Context 也无 deadline，单次直连可能无限阻塞。请务必显式 `direct.WithTimeout(...)`，或确保 `ctx` 携带超时。
+### 🔎 `Portia` 直连蜘蛛（两点留意）
+- **敏感请求头缓存无过期**：`Portia`（`spider.NewPortia`）会把偷到的请求头快照（含 **Cookie / Authorization** 等）按 URL 缓存在内存中，静默重放到后续直连，直到主动 `Clear(url)` / `Fresh(ctx, t)` 或命中状态码刷新策略。它**不会自动过期**，长期运行的健壮性程序应在会话切换后调用 `Clear(url)` / `Fresh(ctx, t)`，避免把旧会话的登录态错误地重放到新请求。
+- **默认无直连超时**：`NewPortia` 默认不设置超时（依赖调用方 `ctx` 的 deadline），若 `ctx` 也无 deadline，单次直连可能无限阻塞。请务必显式 `spider.WithTimeout(...)`，或确保 `ctx` 携带超时。
 
 ### ℹ️ 其它
 - `headless`、`user_mode`、`incognito` 等按部署环境取舍；非 headless 需要桌面环境。

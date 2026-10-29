@@ -11,7 +11,7 @@ type Config struct {
 	Model  *ModelConfig  `yaml:"model"`
 }
 
-// Load 读取 YAML 配置文件，返回 rod 配置与登录账号
+// Load 读取 YAML 配置文件并解析为 *Config（Spider 与环境变量优先级见下）。
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -6,8 +6,6 @@ import (
 
 	"github.com/LouYuanbo1/spider-nest/config"
 	"github.com/LouYuanbo1/spider-nest/spider/hijack"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
 )
 
 // 本文件只保留"Weaver 侧的 hijack 编排"：
@@ -15,7 +13,7 @@ import (
 //   - enableRouter / buildHandlerByConfig / RulesFromConfig：装配合法 hijack 规则。
 //
 // 其余纯机制（HijackHandler / HijackRule / 三种 Capture / 各工厂 handler）已在
-// spider/hijack 叶包中，供 fetch / direct / cmd 等消费者共用而不必背负整个 Spider。
+// spider/hijack 叶包中，供 crawl / 各类蜘蛛 / cmd 等消费者共用而不必背负整个 Spider。
 
 // buildHandlerByConfig 依据配置解析 handler：只支持预设的几种行为（见 config.HijackHandlerType）。
 // 预设行为之外的自由逻辑，请直接在代码里构造 hijack.HijackHandler 并通过 WithHijack 传入。
@@ -52,42 +50,4 @@ func RulesFromConfig(cfg []config.HijackConfig, logger *slog.Logger) ([]hijack.H
 		})
 	}
 	return rules, nil
-}
-
-// enableRouter 校验并装配一组规则到一把新建的独立 HijackRouter 上（Add 齐即返回，不 Run）。
-// 供 WithHijack 装配监听规则时使用；空规则不经此路径（见 WithHijack）。
-func (s *Weaver) enableRouter(rules []hijack.HijackRule) (*rod.HijackRouter, error) {
-	router := s.browser.HijackRequests()
-	for _, r := range rules {
-		if r.Pattern == "" {
-			return nil, fmt.Errorf("hijack 规则无效：pattern 不能为空")
-		}
-		if r.Handler == nil {
-			r.Handler = func(*rod.Hijack) {} // 兜底：命中也不填内容，回喂空 200
-		}
-		if err := router.Add(r.Pattern, proto.NetworkResourceType(""), hijack.HijackWrapper(r, s.logger)); err != nil {
-			return nil, fmt.Errorf("注册 hijack 规则 %q(%s) 失败: %v", r.Pattern, r.Method, err)
-		}
-	}
-	return router, nil
-}
-
-// WithHijack 为一次"借-用-还"在蜘蛛上挂起一套监听，fn 结束即自动撤除。
-// 回调 fn 在前、监听规则为可选变参（与 Nest.BorrowSpider 的 fn 在前约定对齐）：
-// 规则为空时 fn 原样执行（不启用 Fetch 域、不关缓存）。
-// 浏览器级拦截对后台/未聚焦标签页同样生效（page 级拦截会因渲染层节流失效），
-// 同一次监听内的所有网（页面）共享这套规则。
-//
-// 回调 fn 会拿到蜘蛛本体（本接口自身），意在把"hijack 之后紧接着的动作"与这只
-// 蜘蛛显式绑定：如 fn 里再 BorrowWeb/Crawl，读起来就是"在这只蜘蛛上监听并行事"。
-func (s *Weaver) WithHijack(fn func(SpiderAPI) error, rules ...hijack.HijackRule) error {
-	if len(rules) != 0 {
-		router, err := s.enableRouter(rules)
-		if err != nil {
-			return err
-		}
-		go router.Run() // 全部规则 Add 完毕后才启动监听
-		defer router.Stop()
-	}
-	return fn(s)
 }

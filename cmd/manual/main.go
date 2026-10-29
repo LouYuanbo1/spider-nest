@@ -30,7 +30,7 @@ func main() {
 	capSink := []hijack.RequestCapture{}
 
 	// 两条规则仅在一次"借-用-还"窗口内生效，用 WithHijack 挂起、结束即撤。
-	err = s.WithHijack(func(sp spider.SpiderAPI) error {
+	err = s.WithHijack(func(sp spider.Spider) error {
 		return sp.BorrowWeb(func(w *web.Web) error {
 			if _, err := w.RunAction(ctx, &action.Navigate{
 				URL: "data:text/html,<title>hijack-demo</title><body>hijack demo</body>",

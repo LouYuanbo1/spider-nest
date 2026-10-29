@@ -8,7 +8,7 @@ import (
 
 // RequestCapture 一次被监听到的请求的有效载荷：方法 / URL / 请求头 / 请求体。
 // 请求头取自 devtools 的 Fetch 域数据；请求体仅字符串形式（二进制体 CDP 不采集）。
-// 这是直连重放（fetch.Client）与"偷头"组件（direct）共享的数据契约。
+// 这是直连重放（Portia）与"偷头"组件共享的数据契约。
 type RequestCapture struct {
 	Method  string
 	URL     string
