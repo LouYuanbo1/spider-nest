@@ -61,9 +61,8 @@ type Portia struct {
 	refreshSet map[int]struct{} // 命中这些状态码视为需要刷新（反爬信号）
 	logger     *slog.Logger
 
-	preheatMu sync.Mutex  // 保护预热只执行一次
-	preheated bool        // 是否已完成预热
-	preheat   PreheatFunc // 偷头前需先建立站点上下文的可选策略（如种指纹 Cookie）；nil 则跳过
+	preheatOnce sync.Once   // 保证预热至多执行成功一次；失败不置位（见 doPreheat 的 recover 模式）
+	preheat     PreheatFunc // 偷头前需先建立站点上下文的可选策略（如种指纹 Cookie）；nil 则跳过
 }
 
 // PortiaOption 构造函数选项，沿用 Functional Option 风格。
@@ -118,7 +117,7 @@ func WithLogger(l *slog.Logger) PortiaOption {
 
 // WithTimeout 设置单次直连的超时；<=0 表示不主动加超时（依赖上游上下文）。
 // 超时落在内部 http.Client.Timeout 上，覆盖"连接 + 读响应体"全程。
-func WithTimeout(d time.Duration) PortiaOption {
+func WithClientTimeout(d time.Duration) PortiaOption {
 	return func(c *Portia) {
 		if d > 0 {
 			c.client.Timeout = d
@@ -285,20 +284,30 @@ func (p *Portia) Fetch(ctx context.Context, t Target) (*http.Response, error) {
 
 // doPreheat 调度一次可选预热策略，在进入"偷头"（WithHijack+BorrowWeb）之前独立执行：
 // 策略自借一张网、自还，与后续偷头各占独立页面与独立超时预算。
+//
+// 用 sync.Once 保证"成功只执行一次"；失败时借 panic/recover 让 Once 不置位，
+// 下次 Fetch 会重新尝试预热（等价于手动锁方案的 "err == nil 才置 preheated" 语义）。
 func (p *Portia) doPreheat(ctx context.Context) error {
 	if p.preheat == nil {
 		return nil
 	}
-	p.preheatMu.Lock()
-	defer p.preheatMu.Unlock()
-	if p.preheated {
-		return nil
+	var warmErr error
+	p.preheatOnce.Do(func() {
+		// 一旦 fn panic，Once 不会把 done 置位，下次调用可重试；
+		// 这里 recover 把 panic 携带的 error 接回，避免异常冒泡到 Fetch。
+		defer func() {
+			if r := recover(); r != nil {
+				warmErr, _ = r.(error)
+			}
+		}()
+		p.log().Info("站点预热：先建立目标站点上下文（如种下指纹 Cookie）")
+		if err := p.preheat(ctx, p.Spider); err != nil {
+			panic(err)
+		}
+	})
+	if warmErr != nil {
+		return fmt.Errorf("站点预热失败: %w", warmErr)
 	}
-	p.log().Info("站点预热：先建立目标站点上下文（如种下指纹 Cookie）")
-	if err := p.preheat(ctx, p.Spider); err != nil {
-		return fmt.Errorf("站点预热失败: %w", err)
-	}
-	p.preheated = true
 	return nil
 }
 
