@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/LouYuanbo1/spider-nest/action"
@@ -23,7 +24,22 @@ func (w *Web) DoJavaScript(ctx context.Context, a *action.JavaScript) (string, e
 	if len(a.Args) > 0 {
 		source = a.JS
 	} else {
-		source = "async () => { " + a.JS + "\n}"
+		trimmed := strings.TrimSpace(a.JS)
+		// 模型经常直接给"纯表达式"（如 1+1、document.title），这类不是语句，
+		// 放进函数体 { … } 里没有 return 会默默返回 undefined。
+		// 因此对"单表达式"用箭头函数简洁体 ( ) 包裹，让其自动 return 求值结果；
+		// 而以 function/async/=> 起头、或含换行/分号的多语句输入仍套原函数体，语义不变。
+		isFuncExpr := strings.HasPrefix(trimmed, "function") ||
+			strings.HasPrefix(trimmed, "async") ||
+			strings.Contains(trimmed, "=>")
+		isSingleExpr := !isFuncExpr &&
+			!strings.Contains(trimmed, "\n") &&
+			!strings.Contains(trimmed, ";")
+		if isSingleExpr {
+			source = "async () => ( " + a.JS + " )"
+		} else {
+			source = "async () => { " + a.JS + "\n}"
+		}
 	}
 
 	var result *proto.RuntimeRemoteObject

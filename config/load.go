@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Spider *SpiderConfig `yaml:"spider"`
 	Model  *ModelConfig  `yaml:"model"`
+	MCP    *MCPConfig    `yaml:"mcp"`
 }
 
 // Load 读取 YAML 配置文件并解析为 *Config（Spider 与环境变量优先级见下）。

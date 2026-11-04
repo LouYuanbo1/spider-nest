@@ -66,3 +66,10 @@ type SpiderConfig struct {
 type ModelConfig struct {
 	APIKey string `yaml:"api_key"`
 }
+
+// MCPConfig 配置 agent 侧工具调用所连接的远端 MCP 服务端点。
+// agent 不再直接操纵本地浏览器，而是把每个工具调用作为 tools/call 发给这里指定的 MCP HTTP 服务。
+type MCPConfig struct {
+	// BaseURL 是 MCP Streamable HTTP 的 JSON-RPC 端点，例如 http://127.0.0.1:8080/mcp。
+	BaseURL string `yaml:"base_url"`
+}

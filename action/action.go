@@ -4,12 +4,11 @@
 // 是各模块之间传递任务与结果的统一中立契约：
 //   - web   依赖本包，把动作翻译成具体浏览器操作（纯执行器）；
 //   - nest / spider 把 []action.Action 下发给 web 执行，并把结果 []action.ActionResult 回传；
-//   - agent/tools 依据动作结构体上的 JSON-Schema tag 生成给 LLM 调用的工具契约；
-//   - 解析核心（action.Spec + action.ParseActions，见 parse.go）对所有格式/配置类型无感知，
-//     是"配置文件无关"的动作解析器——要支持 YAML/JSON 等前端，只需各自实现一个满足 Spec
-//     的 spec 前端（如声明式 YAML 的 yamlSpec）并把动作描述喂给 ParseActions 即可复用整套校验。
+//   - server 把动作结构体映射为 MCP 工具（带显式句柄的请求模型见 request.go）；
+//   - 解析核心（action.Spec + action.ParseActions，见 parse.go）对任意格式/配置类型无感知。
 //
 // 依赖方向始终指向本包，本包不反向依赖任何上层模块（仅依赖 go-rod 的 proto 数据类型）。
+// 注意：本文件只声明"纯动作"，不携带 web_id 等路由信息——那些属于带句柄的请求模型（request.go）。
 package action
 
 import "github.com/go-rod/rod/lib/proto"
@@ -19,8 +18,9 @@ type Action interface {
 	isAction()
 }
 
+// Navigate 导航到指定 URL 并等待页面完整加载。
 type Navigate struct {
-	URL string `json:"url" jsonschema:"description=用于指定要导航的目标 URL"`
+	URL string `json:"url" jsonschema:"用于指定要导航的目标 URL"`
 }
 
 func (n *Navigate) isAction() {
@@ -34,8 +34,8 @@ const (
 )
 
 type Click struct {
-	Type     SelectorType `json:"type" jsonschema:"description=用于指定要点击的元素类型"`
-	Selector string       `json:"selector" jsonschema:"description=用于指定要点击的元素选择器"`
+	Type     SelectorType `json:"type" jsonschema:"用于指定要点击的元素类型"`
+	Selector string       `json:"selector" jsonschema:"用于指定要点击的元素选择器"`
 }
 
 func (c *Click) isAction() {
@@ -53,10 +53,12 @@ const (
 )
 
 type AXTreeNode struct {
-	BackendDOMNodeID proto.DOMBackendNodeID `json:"backendDOMNodeID,omitzero" jsonschema:"description=用于指定要操作的元素的 AX 节点ID,如果知晓节点ID优先使用,则无需指定角色和名称"`
-	Role             RoleType               `json:"role" jsonschema:"description=用于指定要操作的元素的 AX 角色"`
-	Name             string                 `json:"name" jsonschema:"description=用于指定要操作的元素的 AX 名称"`
-	Nth              int                    `json:"nth" jsonschema:"description=用于指定要操作的元素的 AX 节点索引,处理角色和名称相同的问题,默认0"`
+	// BackendDOMNodeID 是 get_interactives_tool / get_content_tool(ax 模式) 返回的 node_id。
+	// 它是首选定位方式：一旦提供，则无需（也不会）再按 role/name 去查找。
+	BackendDOMNodeID proto.DOMBackendNodeID `json:"backendDOMNodeID,omitzero" jsonschema:"用于指定要操作的元素的 AX 节点ID,如果知晓节点ID优先使用,则无需指定角色和名称"`
+	Role             RoleType               `json:"role,omitempty" jsonschema:"用于指定要操作的元素的 AX 角色,仅在未提供节点ID时使用"`
+	Name             string                 `json:"name,omitempty" jsonschema:"用于指定要操作的元素的 AX 名称,仅在未提供节点ID时使用"`
+	Nth              int                    `json:"nth,omitempty" jsonschema:"用于指定要操作的元素的 AX 节点索引,处理角色和名称出现多个结果时的消歧,默认0"`
 }
 
 type ClickByAXTree struct {
@@ -67,10 +69,10 @@ func (c *ClickByAXTree) isAction() {
 }
 
 type Input struct {
-	Type     SelectorType `json:"type" jsonschema:"description=用于指定要输入文本的输入框类型"`
-	Selector string       `json:"selector" jsonschema:"description=用于指定要输入文本的输入框选择器"`
-	Text     string       `json:"text" jsonschema:"description=要输入到输入框中的文本内容"`
-	Clear    bool         `json:"clear" jsonschema:"description=是否先清空输入框原有内容再输入,默认为false"`
+	Type     SelectorType `json:"type" jsonschema:"用于指定要输入文本的输入框类型"`
+	Selector string       `json:"selector" jsonschema:"用于指定要输入文本的输入框选择器"`
+	Text     string       `json:"text" jsonschema:"要输入到输入框中的文本内容"`
+	Clear    bool         `json:"clear,omitempty" jsonschema:"是否先清空输入框原有内容再输入,默认为false"`
 }
 
 func (in *Input) isAction() {
@@ -78,23 +80,23 @@ func (in *Input) isAction() {
 
 type InputByAXTree struct {
 	AXTreeNode
-	Text  string `json:"text" jsonschema:"description=要输入到输入框中的文本内容"`
-	Clear bool   `json:"clear" jsonschema:"description=是否先清空输入框原有内容再输入，默认为false"`
+	Text  string `json:"text" jsonschema:"要输入到输入框中的文本内容"`
+	Clear bool   `json:"clear,omitempty" jsonschema:"是否先清空输入框原有内容再输入，默认为false"`
 }
 
 func (in *InputByAXTree) isAction() {
 }
 
 type Scroll struct {
-	ScrollY int `json:"scroll_y" jsonschema:"description=用于指定要滚动的像素数"`
+	ScrollY int `json:"scroll_y" jsonschema:"用于指定要滚动的像素数"`
 }
 
 func (s *Scroll) isAction() {
 }
 
 type JavaScript struct {
-	JS   string `json:"js" jsonschema:"description=用于指定要执行的JavaScript代码"`
-	Args []any  `json:"args" jsonschema:"description=用于指定JavaScript代码的参数"`
+	JS   string `json:"js" jsonschema:"用于指定要执行的JavaScript代码"`
+	Args []any  `json:"args,omitempty" jsonschema:"用于指定JavaScript代码的参数"`
 }
 
 func (j *JavaScript) isAction() {
@@ -127,7 +129,7 @@ const (
 )
 
 type GetContent struct {
-	Mode ContentMode `json:"mode,omitempty" jsonschema:"description=取数模式,enum=ax,enum=structured,enum=full,default=ax" jsonschema_description:"取数模式。默认ax(首选)：基于浏览器可访问性树AX输出紧凑Markdown，天然剔除隐藏装饰及脚本节点并还原标题列表表格与层级，每条可交互元素附node_id可点击或输入，最省token且图文兼备。structured=已剪枝页面转为可读Markdown，保留粗体行内代码等富文本内联格式，适合内容丰富的阅读。full=完整原始HTML，保留精确DOM结构与CSS属性，仅在需要原始源码代码数据表格或精确选择器定位时使用，token昂贵"` // accessibility(默认)|structured|full
+	Mode ContentMode `json:"mode,omitempty" jsonschema:"取数模式,取值:ax(默认,首选,基于可访问性树AX输出紧凑Markdown,每条可交互元素附node_id可点击或输入)/structured(转为可读Markdown,保留粗体行内代码等富文本内联格式,适合内容丰富的阅读)/full(完整原始HTML,保留精确DOM结构与CSS属性,token昂贵)"` // accessibility(默认)|structured|full
 }
 
 func DefaultContentMode(mode ContentMode) ContentMode {
@@ -150,9 +152,9 @@ func (g *GetInteractive) isAction() {
 // Dir 为空时使用默认下载目录 defaultDownloadDir；Name 为空时由生成方按内容自动生成。
 type Artifact struct {
 	// Dir 指定产物落盘目录；为空时使用默认下载目录 defaultDownloadDir。
-	Dir string `json:"artifact_dir,omitempty" jsonschema:"description=用于指定产物要保存的目录"`
+	Dir string `json:"artifact_dir,omitempty" jsonschema:"用于指定产物要保存的目录"`
 	// Name 指定产物文件名（不含扩展名）；为空时按生成方逻辑自动生成。
-	Name string `json:"artifact_name,omitempty" jsonschema:"description=用于指定产物文件名（不含扩展名）"`
+	Name string `json:"artifact_name,omitempty" jsonschema:"用于指定产物文件名（不含扩展名）"`
 }
 
 type GetPDF struct {

@@ -23,3 +23,6 @@ spider:
   # 或直接用手写 hijack.HijackRule 交给 spider.WithHijack。
 model:
   api_key: your_api_key
+# agent 侧工具改为调用远端 MCP 服务获取结果（base_url 为 JSON-RPC 端点）。
+mcp:
+  base_url: http://127.0.0.1:8080/mcp
