@@ -1,68 +1,45 @@
-// cmd/server 演示如何把爬虫以"服务端"形式暴露出来，通过 JSON 远程调用。
+// server 是一款通过 HTTP 暴露 spider-nest MCP 浏览器工具的服务入口。
 //
-// 这里的 main 只做「装配 + 启动」：真正的泛型 Server（包装 nest.Nest 的 HTTP 外观）
-// 已抽到独立包 server，本文件构建一只 Portia 蜘蛛的创建工厂、把 Portia 独有的
-// Fetch 直连端点注册进路由后，启动 HTTP 服务。
+// 采用"无状态核心 + 显式状态句柄"模型：每个用户（对话）通过 open_web_tool 借一张独立的网，
+// 拿到 web_id 句柄后，全部浏览器动作携带同一 web_id 路由到该网，结束由 close_web_tool 归还、
+// 空闲超时兜底回收。传输层无状态，服务可水平扩展。
 //
-// 职责分离：
-//   - server 包（泛型核心）：JSON 进出 + 调度，只依赖 spider.Spider 通用接口（Crawl）；
-//   - main（具体装配）：提供建蜘蛛工厂、把 Portia 独有的 Fetch 直连端点注册上来。
+// 启动后监听 http://127.0.0.1:8080，任何支持 MCP Streamable HTTP 的客户端都能连接。
 package main
 
 import (
 	"flag"
 	"log"
-	"log/slog"
 	"time"
 
+	"github.com/LouYuanbo1/spider-nest/config"
 	"github.com/LouYuanbo1/spider-nest/server"
 	"github.com/LouYuanbo1/spider-nest/spider"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func main() {
+	configPath := flag.String("config", "config/config.yaml", "配置文件路径")
 	addr := flag.String("addr", ":8080", "HTTP 监听地址")
-	size := flag.Int("spiders", 1, "巢内蜘蛛数（并发上限，即同时可以运行的浏览器进程数）")
 	flag.Parse()
 
-	if *size <= 0 {
-		log.Fatalf("spiders 必须大于 0")
-	}
-
-	// 蜘蛛工厂：每只 Portia 都是「一只 Weaver + 聪明直连层」的独立组合，各自持有
-	// 自己的浏览器进程。巢在需要时才惰性调用本工厂，用完复用、失效则销毁重建。
-	// 因工厂签名是 func() (*spider.Portia, error)，NewServer 的 T/S 会被自动推断为
-	// T=spider.Portia、S=*spider.Portia，即实例化为一座 Portia 巢。
-	create := func() (*spider.Portia, error) {
-		weaver, err := spider.NewWeaver(
-			spider.WithOperationTimeout(30*time.Second),
-			// 预热与偷头各借一张网（先后、不嵌套），池需 >= 2 才能各占一张、互不拖累。
-			spider.WithPagePoolLimit(2),
-			spider.WithHumanize(false),
-		)
-		if err != nil {
-			return nil, err
-		}
-		return spider.NewPortia(weaver,
-			spider.WithClientTimeout(15*time.Second),
-			spider.WithTransportRetries(2),
-			spider.WithRefreshRounds(3),
-			// bilibili 类站点需先访问首页由反爬 JS 种下指纹 Cookie，API 直连才不被 403。
-			spider.WithWarmup(spider.PreheatNavigate("https://www.bilibili.com/")),
-			spider.WithRefreshStatuses(403, 429, 412),
-			spider.WithLogger(slog.Default().With("component", "spider-server")),
-		)
-	}
-
-	srv, err := server.NewServer(*size, create)
+	appcfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("创建爬虫服务端失败: %v", err)
+		log.Fatalf("解析配置失败: %v", err)
 	}
-	defer func() { _ = srv.Close() }()
 
-	// 泛型核心只提供通用端点；把 Portia 独有的直连端点补充注册上去后统一启动。
-	mux := srv.Routes()
-	mux.HandleFunc("/api/fetch", server.PortiaFetch(srv.Nest()))
-	if err := srv.ServeHandler(*addr, mux); err != nil {
-		log.Fatalf("HTTP 服务启动失败: %v", err)
+	spiderInstance, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
+	if err != nil {
+		log.Fatalf("创建爬虫失败: %v", err)
+	}
+	defer spiderInstance.Close()
+
+	// 以"网(web)"为基本单位的显式句柄 broker：一个用户借一张网，用完归还，空闲超时兜底回收。
+	broker := server.NewWebBroker(spiderInstance, appcfg.Spider.OperationTimeout, 10*time.Minute)
+	defer broker.Shutdown()
+
+	impl := &mcp.Implementation{Name: "spider-nest", Version: "v1.0.0"}
+	if err := server.RunBrokerHTTPServer(broker, *addr, impl, nil); err != nil {
+		log.Fatalf("HTTP 服务退出: %v", err)
 	}
 }

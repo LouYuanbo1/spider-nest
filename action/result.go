@@ -13,10 +13,10 @@ package action
 // ArtifactPath：落盘产物的文件路径（如 PDF）。与 Value 分离，
 // 避免把"文件位置"和"返回内容"混在一个字段里。
 type ActionResult struct {
-	Action       string `yaml:"action" json:"action"`
-	Title        string `yaml:"title" json:"title"`
-	URL          string `yaml:"url" json:"url"`
-	Value        string `yaml:"value" json:"value"`                 // 动作返回的主要内容：HTML/JS 执行结果（可能为空）
-	ArtifactPath string `yaml:"artifact_path" json:"artifact_path"` // 落盘产物路径（如 PDF），为空表示无产物
-	Effective    bool   `yaml:"effective" json:"effective"`
+	Action       string `yaml:"action" json:"action" jsonschema:"本次执行的动作名,例如 navigate / click / get_content"`
+	Title        string `yaml:"title" json:"title" jsonschema:"执行动作后当前页面的标题"`
+	URL          string `yaml:"url" json:"url" jsonschema:"执行动作后当前页面的 URL"`
+	Value        string `yaml:"value" json:"value" jsonschema:"动作返回的主要内容:HTML/JS 执行结果,可能为空"`
+	ArtifactPath string `yaml:"artifact_path" json:"artifact_path" jsonschema:"落盘产物路径(如 PDF),为空表示无产物"`
+	Effective    bool   `yaml:"effective" json:"effective" jsonschema:"动作是否执行成功且预期结果可用"`
 }

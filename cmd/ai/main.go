@@ -14,7 +14,10 @@ import (
 	"github.com/LouYuanbo1/spider-nest/agent"
 	"github.com/LouYuanbo1/spider-nest/agent/mnemo/fs"
 	"github.com/LouYuanbo1/spider-nest/config"
+	"github.com/LouYuanbo1/spider-nest/server"
 	"github.com/LouYuanbo1/spider-nest/spider"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/cloudwego/eino-ext/components/model/deepseek"
 	"github.com/cloudwego/eino/schema"
 )
@@ -49,6 +52,8 @@ func main() {
 		return
 	}
 
+	// 内嵌一套本地 MCP 服务：agent 通过 HTTP 调用它，再由它驱动真实浏览器。
+	// 无需预先手动启动独立 server 进程，一条命令即可跑通整条链路。
 	spiderInstance, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
 	if err != nil {
 		fmt.Printf("Error creating spider: %v", err)
@@ -56,8 +61,6 @@ func main() {
 	}
 	defer spiderInstance.Close()
 
-	// 借取一张网供 agent 独占持有整轮会话：
-	// 会话结束先用 Release 归还（失效会被销毁重建并补网），再随 Close 统一回收。
 	w, err := spiderInstance.Acquire()
 	if err != nil {
 		fmt.Printf("Error acquiring web: %v", err)
@@ -65,7 +68,15 @@ func main() {
 	}
 	defer spiderInstance.Release(w)
 
-	modelAgent, err := agent.NewDefaultSpiderAgent(ctx, chatModel, w)
+	impl := &mcp.Implementation{Name: "spider-nest", Version: "v1.0.0"}
+	mcpBaseURL, closeLocal, err := server.Listen(w, impl, nil)
+	if err != nil {
+		fmt.Printf("Error starting local MCP server: %v", err)
+		return
+	}
+	defer closeLocal()
+
+	modelAgent, err := agent.NewDefaultSpiderAgent(ctx, chatModel, mcpBaseURL)
 	if err != nil {
 		fmt.Printf("Error creating spider agent: %v", err)
 		return
