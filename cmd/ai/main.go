@@ -54,22 +54,35 @@ func main() {
 
 	// 内嵌一套本地 MCP 服务：agent 通过 HTTP 调用它，再由它驱动真实浏览器。
 	// 无需预先手动启动独立 server 进程，一条命令即可跑通整条链路。
-	spiderInstance, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
-	if err != nil {
-		fmt.Printf("Error creating spider: %v", err)
-		return
+	nestConfig := config.NestConfig{SpiderPoolLimit: 1}
+	if appcfg.Nest != nil && appcfg.Nest.SpiderPoolLimit > 0 {
+		nestConfig.SpiderPoolLimit = appcfg.Nest.SpiderPoolLimit
 	}
-	defer spiderInstance.Close()
 
-	w, err := spiderInstance.Acquire()
+	// 统一"显式状态句柄"模型：agent 侧 MCP 客户端首次动作前自动借一张网并缓存 web_id，
+	// 之后所有浏览器操作都携带同一 web_id。底层为 Nest（多浏览器池），一用户一网独占
+	// 一个浏览器实例，会话结束 / 进程退出时由 manager 兜底归还。
+	mgr, err := server.NewWebSessionManager(
+		nestConfig,
+		func() (*spider.Weaver, error) {
+			s, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
+			if err != nil {
+				return nil, err
+			}
+			return s.(*spider.Weaver), nil
+		},
+		appcfg.Spider.OperationTimeout,
+		60*time.Second, // hotTTL：热页空闲多久后冷提交
+		10*time.Minute, // idleTTL：冷态会话无使用多久后彻底回收
+	)
 	if err != nil {
-		fmt.Printf("Error acquiring web: %v", err)
+		fmt.Printf("Error creating session manager: %v", err)
 		return
 	}
-	defer spiderInstance.Release(w)
+	defer mgr.Shutdown()
 
 	impl := &mcp.Implementation{Name: "spider-nest", Version: "v1.0.0"}
-	mcpBaseURL, closeLocal, err := server.Listen(w, impl, nil)
+	mcpBaseURL, closeLocal, err := server.Listen(mgr, impl, nil)
 	if err != nil {
 		fmt.Printf("Error starting local MCP server: %v", err)
 		return

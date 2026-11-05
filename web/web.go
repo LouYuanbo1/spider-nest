@@ -14,7 +14,7 @@ import (
 // Web 网：蜘蛛织出的网，持有并操作单张页面（轻量单位）。
 // Spider 只持有浏览器，把抓取任务委托给一张张网去执行。
 type Web struct {
-	Page      *rod.Page
+	page      *rod.Page
 	humanize  bool
 	opTimeout time.Duration
 	broken    bool // 已标记为失效（执行出错时探活判定），归还时据此销毁重建
@@ -41,10 +41,10 @@ func (w *Web) OpTimeout() time.Duration {
 // 供上层（Spider）在复用网前区分失效实例，从而及时销毁并用新实例替换，
 // 语义与 Spider.IsActive / Nest.Release 对齐。
 func (w *Web) IsActive() bool {
-	if w == nil || w.Page == nil {
+	if w == nil || w.page == nil {
 		return false
 	}
-	_, err := w.Page.Info()
+	_, err := w.page.Info()
 	return err == nil
 }
 
@@ -56,11 +56,20 @@ func (w *Web) MarkBroken() { w.broken = true }
 // 供 Release 在热路径上决定复用还是淘汰，替代原先每次归还都发的 Page.Info。
 func (w *Web) Broken() bool { return w != nil && w.broken }
 
+// ClosePage 关闭网持有的页面（幂等）：支持 nil 接收者与空页面，
+// 把外层"判空 + 关闭"的样板收敛到一处，供 Spider 在归还/关停时统一调用。
+func (w *Web) ClosePage() {
+	if w == nil || w.page == nil {
+		return
+	}
+	_ = w.page.Close()
+}
+
 // New 新建一张网（Web）。网是持有单张页面的轻量单位，页面在其 Page 字段上；
 // Spider 只持有浏览器并把任务委托给网执行；需要在网上设置人类化与超时等
 // 行为时通过 Option 注入。
 func New(page *rod.Page, opts ...Option) *Web {
-	w := &Web{Page: page, opTimeout: 30 * time.Second}
+	w := &Web{page: page, opTimeout: 30 * time.Second}
 	for _, o := range opts {
 		o(w)
 	}
@@ -177,7 +186,7 @@ func actionName(a action.Action) string {
 }
 
 func (w *Web) navigate(ctx context.Context, a *action.Navigate) error {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	if err := page.Navigate(a.URL); err != nil {
 		return fmt.Errorf("导航失败: %v", err)
 	}

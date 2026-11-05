@@ -63,6 +63,15 @@ type SpiderConfig struct {
 	PagePoolLimit    int           `yaml:"page_pool_limit"`
 }
 
+// NestConfig 描述"一座巢"的容量，是 Nest 与上层管理器（如 server.WebSessionManager）
+// 共用的配置类型。放在 config 包而非 nest 包，是因为依赖方向本就允许：nest 已依赖
+// config，config 不依赖 nest，故此处定义可被 nest 直接复用而不会成环。
+type NestConfig struct {
+	// MaxSpiders 并发上限：巢内可同时活动的蜘蛛（浏览器）实例数。
+	// 每只蜘蛛独占一个浏览器进程，故该值即最大并发浏览器数。
+	SpiderPoolLimit int `yaml:"spider_pool_limit"`
+}
+
 type ModelConfig struct {
 	APIKey string `yaml:"api_key"`
 }

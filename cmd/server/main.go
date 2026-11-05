@@ -28,18 +28,35 @@ func main() {
 		log.Fatalf("解析配置失败: %v", err)
 	}
 
-	spiderInstance, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
-	if err != nil {
-		log.Fatalf("创建爬虫失败: %v", err)
+	nestConfig := config.NestConfig{SpiderPoolLimit: 1}
+	if appcfg.Nest != nil && appcfg.Nest.SpiderPoolLimit > 0 {
+		nestConfig.SpiderPoolLimit = appcfg.Nest.SpiderPoolLimit
 	}
-	defer spiderInstance.Close()
 
-	// 以"网(web)"为基本单位的显式句柄 broker：一个用户借一张网，用完归还，空闲超时兜底回收。
-	broker := server.NewWebBroker(spiderInstance, appcfg.Spider.OperationTimeout, 10*time.Minute)
+	// 以 Nest（多浏览器池）为资源来源的冷热两态会话管理器：
+	// 并发上限 = 池内浏览器数，一用户一会话即独占一个浏览器实例；活跃操作用热页，
+	// 空闲超 hotTTL 自动冷提交（归还浏览器、留检查点），再次用到时按检查点重水化，
+	// 从而在"LLM 思考/idle"期间不占浏览器、抬高并发密度；用完归还、冷态超时兜底回收。
+	broker, err := server.NewWebSessionManager(
+		nestConfig,
+		func() (*spider.Weaver, error) {
+			s, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
+			if err != nil {
+				return nil, err
+			}
+			return s.(*spider.Weaver), nil
+		},
+		appcfg.Spider.OperationTimeout,
+		60*time.Second, // hotTTL：热页空闲多久后冷提交
+		10*time.Minute, // idleTTL：冷态会话无使用多久后彻底回收
+	)
+	if err != nil {
+		log.Fatalf("创建会话管理器失败: %v", err)
+	}
 	defer broker.Shutdown()
 
 	impl := &mcp.Implementation{Name: "spider-nest", Version: "v1.0.0"}
-	if err := server.RunBrokerHTTPServer(broker, *addr, impl, nil); err != nil {
+	if err := server.RunHTTPServer(broker, *addr, impl, nil); err != nil {
 		log.Fatalf("HTTP 服务退出: %v", err)
 	}
 }

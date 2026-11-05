@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	Spider *SpiderConfig `yaml:"spider"`
+	Nest   *NestConfig   `yaml:"nest"`
 	Model  *ModelConfig  `yaml:"model"`
 	MCP    *MCPConfig    `yaml:"mcp"`
 }

@@ -16,7 +16,7 @@ const jsRetryDelay = 300 * time.Millisecond
 
 // DoJavaScript 在网持有的页面上执行JS并返回序列化结果
 func (w *Web) DoJavaScript(ctx context.Context, a *action.JavaScript) (string, error) {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	// 无参时用 async 函数表达式包裹（而非立即执行的 IIFE）：
 	// rod 的 Eval 会以 .apply(this, arguments) 调用该函数表达式并 awaitPromise，
 	// 若写成 IIFE 则会得到一个 Promise，再被 .apply 调用时报 "apply is not a function"。

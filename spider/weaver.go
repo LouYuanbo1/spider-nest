@@ -39,6 +39,31 @@ type Weaver struct {
 	closed    atomic.Bool   // 已关闭：关闭后拒绝再派网、归还网直接关页；只置位不复位
 	closeOnce sync.Once     // 保证 Close 的副作用（close(done)/清池/关浏览器）恰好执行一次
 	done      chan struct{} // Close 时 close，用于唤醒阻塞中的 AcquireCtx
+
+	// busy 记录当前已借出的网数。与网池通道的"取走槽位/归还槽位"不同，
+	// 它以"成功借出网"为边界（AcquireCtx 返回网时 ++、Release 收网时 --），
+	// 故空槽创建失败等"取槽但未借出"的路径天然不计入，无需补偿。
+	// 供上层（Nest/session）据此判断本蜘蛛还剩多少可立即借出的网。
+	busy atomic.Int64
+}
+
+// WebPoolStats 是一次蜘蛛网池占用情况的只读快照。
+//   - Capacity：网池上限（cap(webs)），即本蜘蛛可并发的页面数；
+//   - Busy：当前已借出的网数。
+//
+// Available() 即"还能立即借出几张网"（含空槽可即时新建），供选蛛/限流决策。
+type WebPoolStats struct {
+	Capacity int
+	Busy     int
+}
+
+// Available 返回当前无需阻塞即可再借出的网数（= 池余量，空槽也算可即时新建）。
+func (s WebPoolStats) Available() int { return s.Capacity - s.Busy }
+
+// WebPoolStats 返回当前网池占用快照；接入 Spider 契约后，供 Nest 在选蛛时
+// 优先挑一只有余量（Available>0）的蜘蛛，避免抢到网全满的蜘蛛再干等。
+func (s *Weaver) WebPoolStats() WebPoolStats {
+	return WebPoolStats{Capacity: cap(s.webs), Busy: int(s.busy.Load())}
 }
 
 // ErrClosed 表示蜘蛛（网池）已关闭，拒绝再进行派/收网。
@@ -178,6 +203,7 @@ func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Web, error) {
 	select {
 	case slot := <-s.webs:
 		if slot != nil {
+			s.busy.Add(1)
 			return slot, nil
 		}
 		// 命中空槽位 → 新建。创建失败必须归还一个空槽位，
@@ -187,6 +213,7 @@ func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Web, error) {
 			s.webs <- nil
 			return nil, fmt.Errorf("从网池取网失败: %v", err)
 		}
+		s.busy.Add(1)
 		return created, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -208,11 +235,12 @@ func (s *Weaver) Release(w *web.Web) error {
 	if w == nil {
 		return nil
 	}
+	// 这只已借出的网此刻完成归还（无论放回/重建/关页），占用减一。
+	// 收敛在入口统一处理，各分支无需再各自维护计数。
+	s.busy.Add(-1)
 	if s.closed.Load() {
 		// 已关闭：借出的网直接关闭，不再放回（池已被回收）。
-		if w.Page != nil {
-			_ = w.Page.Close()
-		}
+		w.ClosePage()
 		return ErrClosed
 	}
 	// 仅当执行路径已把网标记为失效（见 RunAction 出错时探活）才重建。
@@ -222,9 +250,7 @@ func (s *Weaver) Release(w *web.Web) error {
 		return nil
 	}
 	s.logger.Warn("网实例失效，重建中")
-	if w.Page != nil {
-		_ = w.Page.Close()
-	}
+	w.ClosePage()
 	created, err := s.create()
 	if err != nil {
 		// #7 创建失败也归还空槽位，避免池容量永久减一。
@@ -305,9 +331,8 @@ func (s *Weaver) Close() error {
 		// 发现已关闭后自行关页（见 Release）。
 		n := len(s.webs)
 		for range n {
-			if w := <-s.webs; w != nil && w.Page != nil {
-				_ = w.Page.Close()
-			}
+			w := <-s.webs
+			w.ClosePage() // 空槽位的 nil 接收由 ClosePage 内部兜底
 		}
 
 		if s.browser != nil {

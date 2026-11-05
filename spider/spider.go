@@ -23,6 +23,9 @@ type Spider interface {
 	CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action) ([][]action.ActionResult, error)
 	Close() error
 	IsActive() bool
+	// WebPoolStats 返回当前网池占用快照（容量/已借出），供上层选蛛时判断
+	// 本蜘蛛是否还有余量能立即借出网（Available>0）而无需阻塞等待。
+	WebPoolStats() WebPoolStats
 	// WithHijack 在 fn 执行期间挂起一套监听、结束即自动撤除（一次操作窗口的便捷封装）。
 	// 回调 fn 在前、监听规则为可选变参：不需要监听时直接传 fn 即可。
 	WithHijack(fn func(Spider) error, rules ...hijack.HijackRule) error
