@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/LouYuanbo1/spider-nest/action"
-	"github.com/LouYuanbo1/spider-nest/web"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -16,31 +15,22 @@ import (
 //
 //   - In  是对应的带句柄请求模型（如 action.NavigateRequest，内嵌纯动作 + web_id）；
 //   - Out 统一为 action.ActionResult（结构化执行结果）；
-//   - src 负责按 web_id 解析出真正执行动作的那张网：单网模式（singleWebSource）忽略 web_id，
-//     多网 broker 模式（*WebBroker）要求调用方先 open_web_tool 借网拿到句柄。
+//   - m   负责按 web_id 解析出真正执行动作的那张网：浏览器工具统一要求携带 web_id，
+//     该 web_id 由 open_web_tool 借网时分配（见 lifecycle 工具）。
 //
 // 注册时用 sdk.AddTool 把某个 *toolRegistry 方法绑定到 sdk.Tool 上即可，
 // SDK 会自动根据 In / Out 类型生成输入、输出 JSON-Schema（依赖 jsonschema tag），
 // 并把返回值填写到 CallToolResult 的 structuredContent / content 中。
 type toolRegistry struct {
-	// src 解析 web_id -> 网。
-	src webSource
-	// broker 为多网显式句柄模式时才非 nil，用于注册 open/close/list 生命周期工具。
-	broker *WebBroker
+	// m 是底层会话管理器：既按 web_id 解析网，又承载借/还/列生命周期工具。
+	m *WebSessionManager
 }
 
-// NewMCPServer 用给定的单张网创建 MCP 服务器并注册全部浏览器操作工具。
-// 保留此旧签名用于兼容"一网多用"场景（如 http.go）；等价于用 singleWebSource 包裹一张网的退化模式。
-// implementation 为服务端身份标识（名字 + 版本），opts 为可选的服务器配置（可为 nil）。
-func NewMCPServer(w *web.Web, implementation *mcp.Implementation, opts *mcp.ServerOptions) *mcp.Server {
-	return buildServer(&toolRegistry{src: singleWebSource{w: w}}, implementation, opts)
-}
-
-// NewBrokerMCPServer 用"显式状态句柄"模式创建 MCP 服务器：
+// NewMCPServer 用"显式状态句柄"模式创建 MCP 服务器（统一入口）：
 // 浏览器工具统一要求携带 web_id，另注册 open_web_tool / close_web_tool / list_webs_tool
-// 生命周期工具供模型借还网。底层网来自 broker，一个用户独占一张网。
-func NewBrokerMCPServer(b *WebBroker, implementation *mcp.Implementation, opts *mcp.ServerOptions) *mcp.Server {
-	tr := &toolRegistry{src: b, broker: b}
+// 生命周期工具供模型借还网。底层网来自 WebSessionManager，一个用户独占一张网。
+func NewMCPServer(m *WebSessionManager, implementation *mcp.Implementation, opts *mcp.ServerOptions) *mcp.Server {
+	tr := &toolRegistry{m: m}
 	srv := buildServer(tr, implementation, opts)
 	registerLifecycleTools(srv, tr)
 	return srv
@@ -110,7 +100,7 @@ func buildServer(tr *toolRegistry, implementation *mcp.Implementation, opts *mcp
 	return srv
 }
 
-// registerLifecycleTools 仅在显式句柄（broker）模式下注册"借/还/列"生命周期工具。
+// registerLifecycleTools 注册"借/还/列"生命周期工具。统一句柄模式下始终注册。
 func registerLifecycleTools(srv *mcp.Server, tr *toolRegistry) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "open_web_tool",
@@ -132,20 +122,20 @@ func registerLifecycleTools(srv *mcp.Server, tr *toolRegistry) {
 }
 
 // wrapTool 把执行函数包装成官方 HandlerFor 风格的处理器，并统一处理：
-//   - 超时：每个动作按来源统一的 OpTimeout 限时，超时后取消 ctx 并回传明确提示；
+//   - 超时：每次工具调用按统一的 CallTimeout 限时，超时后取消 ctx 并回传明确提示；
 //   - 日志：把入参、调用结果（截断过长的 Value）打印到终端，便于调试；
 //   - 错误：把执行失败回传为 error，SDK 会自动写入 CallToolResult 的 content 并把 isError 置 true。
 func (tr *toolRegistry) wrapTool[T any](name string, fn func(ctx context.Context, input T) (action.ActionResult, error)) mcp.ToolHandlerFor[T, action.ActionResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, input T) (*mcp.CallToolResult, action.ActionResult, error) {
 		log.Printf("[工具调用] %s 参数: %+v", name, input)
 
-		timeoutCtx, cancel := context.WithTimeout(ctx, tr.src.OpTimeout())
+		timeoutCtx, cancel := context.WithTimeout(ctx, tr.m.CallTimeout())
 		defer cancel()
 
 		result, err := fn(timeoutCtx, input)
 		if err != nil && timeoutCtx.Err() != nil {
 			// 在截止时刻被 ctx 取消，统一归因于超时。
-			err = fmt.Errorf("【%s 执行超时】超过 %v 仍未返回结果。请分析原因，调整参数或换一种方式重新尝试。", name, tr.src.OpTimeout())
+			err = fmt.Errorf("【%s 执行超时】超过 %v 仍未返回结果。请分析原因，调整参数或换一种方式重新尝试。", name, tr.m.CallTimeout())
 		}
 		if err != nil {
 			log.Printf("[工具失败] %s 参数: %+v 错误: %v", name, input, err)
@@ -163,7 +153,7 @@ func (tr *toolRegistry) wrapTool[T any](name string, fn func(ctx context.Context
 
 // openWeb 从池借一张网并返回 web_id 句柄（显式状态句柄的第一步）。
 func (tr *toolRegistry) openWeb(ctx context.Context, _ action.OpenWeb) (action.ActionResult, error) {
-	id, err := tr.broker.Open(ctx)
+	id, err := tr.m.Open(ctx)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -172,7 +162,7 @@ func (tr *toolRegistry) openWeb(ctx context.Context, _ action.OpenWeb) (action.A
 
 // closeWeb 归还 web_id 对应的网（会话结束/资源释放）。
 func (tr *toolRegistry) closeWeb(_ context.Context, in action.CloseWeb) (action.ActionResult, error) {
-	if err := tr.broker.Close(in.WebID); err != nil {
+	if err := tr.m.Close(in.WebID); err != nil {
 		return action.ActionResult{}, err
 	}
 	return action.ActionResult{Action: "close_web", Effective: true, Value: "已归还 web_id=" + in.WebID}, nil
@@ -180,7 +170,7 @@ func (tr *toolRegistry) closeWeb(_ context.Context, in action.CloseWeb) (action.
 
 // listWebs 列出现有仍被占用（未归还）的 web_id。
 func (tr *toolRegistry) listWebs(_ context.Context, _ action.ListWebs) (action.ActionResult, error) {
-	ids := tr.broker.List()
+	ids := tr.m.List()
 	if len(ids) == 0 {
 		return action.ActionResult{Action: "list_webs", Effective: true, Value: "当前没有已借出的网(web_id)"}, nil
 	}
@@ -191,7 +181,7 @@ func (tr *toolRegistry) listWebs(_ context.Context, _ action.ListWebs) (action.A
 
 // navigate 导航到指定 URL 并等待页面加载完成。
 func (tr *toolRegistry) navigate(ctx context.Context, in action.NavigateRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -209,7 +199,7 @@ func (tr *toolRegistry) navigate(ctx context.Context, in action.NavigateRequest)
 
 // click 通过 CSS / XPath 选择器点击页面元素。
 func (tr *toolRegistry) click(ctx context.Context, in action.ClickRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -221,7 +211,7 @@ func (tr *toolRegistry) click(ctx context.Context, in action.ClickRequest) (acti
 
 // clickByAX 通过 get_interactives_tool 返回的 node_id 精准点击可交互元素。
 func (tr *toolRegistry) clickByAX(ctx context.Context, in action.ClickByAXRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -233,7 +223,7 @@ func (tr *toolRegistry) clickByAX(ctx context.Context, in action.ClickByAXReques
 
 // input 通过 CSS / XPath 选择器向输入框键入文本，clear 决定是否先清空。
 func (tr *toolRegistry) input(ctx context.Context, in action.InputRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -246,7 +236,7 @@ func (tr *toolRegistry) input(ctx context.Context, in action.InputRequest) (acti
 
 // inputByAX 通过 node_id（或 role/name+nth）定位输入框并键入文本。
 func (tr *toolRegistry) inputByAX(ctx context.Context, in action.InputByAXRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -259,7 +249,7 @@ func (tr *toolRegistry) inputByAX(ctx context.Context, in action.InputByAXReques
 
 // scroll 按指定像素数滚动当前页面。
 func (tr *toolRegistry) scroll(ctx context.Context, in action.ScrollRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -271,7 +261,7 @@ func (tr *toolRegistry) scroll(ctx context.Context, in action.ScrollRequest) (ac
 
 // execJavaScript 执行 JavaScript 代码并返回执行结果。
 func (tr *toolRegistry) execJavaScript(ctx context.Context, in action.JavaScriptRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -285,7 +275,7 @@ func (tr *toolRegistry) execJavaScript(ctx context.Context, in action.JavaScript
 
 // getContent 按指定模式取回页面内容：ax（默认）/ structured / full。
 func (tr *toolRegistry) getContent(ctx context.Context, in action.GetContentRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -307,7 +297,7 @@ func (tr *toolRegistry) getContent(ctx context.Context, in action.GetContentRequ
 
 // getInteractives 取回页面所有可交互元素（链接/按钮/输入框）及其 node_id。
 func (tr *toolRegistry) getInteractives(ctx context.Context, in action.GetInteractiveRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
@@ -318,7 +308,7 @@ func (tr *toolRegistry) getInteractives(ctx context.Context, in action.GetIntera
 
 // getPDF 把当前页面导出为 PDF，产物路径写入 ArtifactPath。
 func (tr *toolRegistry) getPDF(ctx context.Context, in action.GetPDFRequest) (action.ActionResult, error) {
-	w, err := tr.src.Resolve(ctx, in.WebID)
+	w, err := tr.m.Resolve(ctx, in.WebID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}

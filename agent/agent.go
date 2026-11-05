@@ -6,8 +6,8 @@ import (
 	"io"
 	"log"
 
+	"github.com/LouYuanbo1/spider-nest/agent/mcp"
 	"github.com/LouYuanbo1/spider-nest/agent/mnemo/fs"
-	"github.com/LouYuanbo1/spider-nest/agent/tools"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -36,7 +36,7 @@ func NewSpiderAgent(ctx context.Context, agent *adk.ChatModelAgent) (*SpiderAgen
 
 func NewDefaultSpiderAgent(ctx context.Context, model model.ToolCallingChatModel, mcpBaseURL string) (*SpiderAgent, error) {
 
-	client := tools.NewMCPClient(mcpBaseURL)
+	client := mcp.NewMCPClient(mcpBaseURL)
 	tools, err := newSpiderTools(client)
 	if err != nil {
 		return nil, err
@@ -151,21 +151,21 @@ func NewDefaultSpiderAgent(ctx context.Context, model model.ToolCallingChatModel
 // 每个工具都是指向远端 MCP 服务的轻客户端：由 MCPClient 统一构造。
 // 这里用一张注册表描述“工具名 → 创建函数”，统一依次创建并聚合到工具列表，
 // 避免在 NewDefaultSpiderAgent 中堆叠十余段重复的错误处理代码。
-func newSpiderTools(c *tools.MCPClient) ([]tool.BaseTool, error) {
+func newSpiderTools(c *mcp.Client) ([]tool.BaseTool, error) {
 	constructors := []struct {
 		name string
 		new  func() (tool.InvokableTool, error)
 	}{
-		{name: "navigate_tool", new: func() (tool.InvokableTool, error) { return tools.NewNavigateTool(c) }},
-		{name: "get_interactives_tool", new: func() (tool.InvokableTool, error) { return tools.NewGetInteractivesTool(c) }},
-		{name: "click_tool", new: func() (tool.InvokableTool, error) { return tools.NewClickTool(c) }},
-		{name: "click_by_ax_tool", new: func() (tool.InvokableTool, error) { return tools.NewClickByAXTool(c) }},
-		{name: "input_tool", new: func() (tool.InvokableTool, error) { return tools.NewInputTool(c) }},
-		{name: "input_by_ax_tool", new: func() (tool.InvokableTool, error) { return tools.NewInputByAXTool(c) }},
-		{name: "scroll_tool", new: func() (tool.InvokableTool, error) { return tools.NewScrollTool(c) }},
-		{name: "javascript_tool", new: func() (tool.InvokableTool, error) { return tools.NewJavaScriptTool(c) }},
-		{name: "get_content_tool", new: func() (tool.InvokableTool, error) { return tools.NewGetContentTool(c) }},
-		{name: "get_pdf_tool", new: func() (tool.InvokableTool, error) { return tools.NewGetPDFTool(c) }},
+		{name: "navigate_tool", new: func() (tool.InvokableTool, error) { return mcp.NewNavigateTool(c) }},
+		{name: "get_interactives_tool", new: func() (tool.InvokableTool, error) { return mcp.NewGetInteractivesTool(c) }},
+		{name: "click_tool", new: func() (tool.InvokableTool, error) { return mcp.NewClickTool(c) }},
+		{name: "click_by_ax_tool", new: func() (tool.InvokableTool, error) { return mcp.NewClickByAXTool(c) }},
+		{name: "input_tool", new: func() (tool.InvokableTool, error) { return mcp.NewInputTool(c) }},
+		{name: "input_by_ax_tool", new: func() (tool.InvokableTool, error) { return mcp.NewInputByAXTool(c) }},
+		{name: "scroll_tool", new: func() (tool.InvokableTool, error) { return mcp.NewScrollTool(c) }},
+		{name: "javascript_tool", new: func() (tool.InvokableTool, error) { return mcp.NewJavaScriptTool(c) }},
+		{name: "get_content_tool", new: func() (tool.InvokableTool, error) { return mcp.NewGetContentTool(c) }},
+		{name: "get_pdf_tool", new: func() (tool.InvokableTool, error) { return mcp.NewGetPDFTool(c) }},
 	}
 
 	tools := make([]tool.BaseTool, 0, len(constructors))

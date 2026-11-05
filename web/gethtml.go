@@ -8,7 +8,7 @@ import (
 
 // pageHTML 取出网持有的页面的完整原始 HTML。
 func (w *Web) pageHTML(ctx context.Context, _ *action.GetHTML) (string, error) {
-	return w.Page.Context(ctx).HTML()
+	return w.page.Context(ctx).HTML()
 }
 
 // GetHTML 返回网持有的页面的完整原始 HTML（带超时控制）。

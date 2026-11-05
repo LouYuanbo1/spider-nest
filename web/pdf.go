@@ -69,7 +69,7 @@ func derivePDFName(rawURL string) string {
 }
 
 func (w *Web) pagePDF(ctx context.Context, gp *action.GetPDF) (string, error) {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	// GetPDF 内嵌 *proto.PagePrintToPDF 可为 nil（&GetPDF{Artifact:...} 构造时未设置）
 	// 直接把 nil 传给 rod 的 Page.PDF 会在其内部解引用 req.TransferMode 而 panic，
 	// 这里兜底分配一个零值请求以走 rod 的默认打印参数。

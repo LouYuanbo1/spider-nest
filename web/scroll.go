@@ -54,7 +54,7 @@ func scrollLikeHuman(p *rod.Page, totalY int) error {
 // DoScroll 在网持有的页面上滚动，滚动后等待网络空闲以捕获懒加载内容。
 // 开启 humanize 时分段滚动并在每段间随机"阅读"停留（见 scrollLikeHuman）。
 func (w *Web) doScroll(ctx context.Context, a *action.Scroll) error {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	// 即时滚动（非 smooth）：后台/非激活标签页 rAF 会被节流，
 	// 平滑滚动动画因此不推进；即时改变 scrollTop 则与激活状态无关，规避该问题。
 	if !w.humanize || a.ScrollY == 0 {

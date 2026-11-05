@@ -18,7 +18,7 @@ import (
 //   - 保留 node_id（即 BackendDOMNodeID，与 get_interactives 的 node_id 同源），
 //     使 LLM 拿到内容后可直接用 click_by_node_id / input_by_node_id 交互。
 func (w *Web) getAXContent(ctx context.Context, _ *action.GetAXContent) (string, error) {
-	p := w.Page.Context(ctx)
+	p := w.page.Context(ctx)
 	result, err := getFullAXTree(p)
 	if err != nil {
 		return "", err

@@ -21,6 +21,10 @@ spider:
   # 注意：hijack 拦截规则不再从本文件加载（SpiderConfig 已不承载 hijack 字段）。
   # 请按"借-用-还"窗口程序化传入，见 nest.Crawl / nest.BorrowSpider 的 hijackCfgs 变参，
   # 或直接用手写 hijack.HijackRule 交给 spider.WithHijack。
+nest:
+  # 并发上限：可同时活动的浏览器（蜘蛛）实例数。每张网独占其所属浏览器，故该值
+  # 即最大并发会话/用户数；>1 时启用多浏览器并行与故障隔离。
+  spider_pool_limit: 1
 model:
   api_key: your_api_key
 # agent 侧工具改为调用远端 MCP 服务获取结果（base_url 为 JSON-RPC 端点）。

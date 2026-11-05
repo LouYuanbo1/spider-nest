@@ -147,7 +147,7 @@ func (w *Web) inputToElement(el *rod.Element, text string, clearFlag bool) (bool
 
 // DoInput 在网持有的页面上以 CSS 选择器定位输入框输入文本；返回是否真正写入成功
 func (w *Web) doInput(ctx context.Context, a *action.Input) (bool, error) {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	var el *rod.Element
 	var err error
 	switch a.Type {
@@ -181,7 +181,7 @@ func (w *Web) doInputByAX(
 	ctx context.Context,
 	a *action.InputByAXTree,
 ) (bool, error) {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	var err error
 	backendDOMNodeID := a.BackendDOMNodeID
 	if backendDOMNodeID == 0 {

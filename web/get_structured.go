@@ -202,7 +202,7 @@ func prune(n *html.Node) bool {
 // Markdown（表格/任务列表/删除线用 GFM 扩展）。相比原始 HTML 更省 token、对 LLM 更友好，
 // 同时保留标题、列表、表格、链接等结构。
 func (w *Web) getStructured(ctx context.Context, _ *action.GetStructured) (string, error) {
-	p := w.Page.Context(ctx)
+	p := w.page.Context(ctx)
 	raw, err := p.HTML()
 	if err != nil {
 		return "", err

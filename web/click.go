@@ -36,7 +36,7 @@ func (w *Web) clickElement(el *rod.Element) error {
 }
 
 func (w *Web) doClick(ctx context.Context, a *action.Click) error {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	var el *rod.Element
 	var err error
 	switch a.Type {
@@ -59,7 +59,7 @@ func (w *Web) DoClick(ctx context.Context, a *action.Click) error {
 }
 
 func (w *Web) doClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
-	page := w.Page.Context(ctx)
+	page := w.page.Context(ctx)
 	var err error
 	backendDOMNodeID := a.BackendDOMNodeID
 	if backendDOMNodeID == 0 {
