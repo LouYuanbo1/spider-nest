@@ -1,4 +1,7 @@
-package server
+// Package session 承载"会话核心"：把资源池上的一纸租约（provider.WebHandle）提升为
+// 冷热两态的会话状态机。它只依赖 provider（资源契约）+ web（页面模型），不关心后端是
+// Nest 多蜘蛛池、单个蜘蛛还是远端云端编排——编排层只按 provider.Stats() 的容量做决策。
+package session
 
 import (
 	"context"
@@ -10,8 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LouYuanbo1/spider-nest/config"
-	"github.com/LouYuanbo1/spider-nest/nest"
+	"github.com/LouYuanbo1/spider-nest/provider"
 	"github.com/LouYuanbo1/spider-nest/web"
 )
 
@@ -38,34 +40,34 @@ type OpenOptions struct {
 	Sticky map[string]string
 }
 
-// webSession 是"一个会话"：web_id 是稳定身份，其底层资源可热可冷、可替换。
+// entry 是"一个会话"：web_id 是稳定身份，其底层资源可热可冷、可替换。
 //
-// 关键革新：web_id 不再绑定某个进程内活页（旧实现的 live[id]→*web.Web），而只
+// 关键革新：web_id 不再绑定某个进程内活页（旧实现一张网对一个 id），而只
 // 绑定一个"会话"。活页只是会话当前借用的底层资源——按需租、按需还。这与"会话是
 // 形、浏览器是租"的云端编排模型一致：进程重启/滚动发布后，会话仍能凭检查点重水化。
 //
 // 并发：mu 串行化本会话的"热↔冷"切换以及冷→热的网络重水化，确保同一 web_id 的
 // 操作有序、且重水化不会叠叠发动多片页。
-type webSession struct {
+type entry struct {
 	id    string
-	state atomic.Int32 // sessionState
+	state atomic.Int32 // stateCold / stateHot
 
-	mu     sync.Mutex      // 序列化热冷切换 + 重水化
-	handle *WebHandle      // 非 nil = 正在热持有（含 Release 归还闭包）
-	cp     *web.Checkpoint // 非 nil = 冷却后待重放
-	pinned atomic.Bool     // 保活：不参与自动冷提交
+	mu     sync.Mutex          // 序列化热冷切换 + 重水化
+	handle *provider.WebHandle // 非 nil = 正在热持有（含 Release 归还闭包）
+	cp     *web.Checkpoint     // 非 nil = 冷却后待重放
+	pinned atomic.Bool         // 保活：不参与自动冷提交
 
 	lastUsed atomic.Int64 // unix 纳秒，最近一次被使用
 	openedAt time.Time
 	sticky   map[string]string
 }
 
-func (s *webSession) markUse() { s.lastUsed.Store(time.Now().UnixNano()) }
+func (s *entry) markUse() { s.lastUsed.Store(time.Now().UnixNano()) }
 
-// WebSessionManager 以"会话(web)"为基本单位，实现"无状态核心 + 显式状态句柄"的
+// Manager 以"会话(web)"为基本单位，实现"无状态核心 + 显式状态句柄"的
 // 冷热两态会话管理器。
 //
-// 设计要点（承接 webProvider.go 的接缝）：
+// 设计要点：
 //   - 一个用户（对话/会话）通过 Open 借一个"会话"，拿到唯一 web_id 作为稳定身份；
 //     之后所有浏览器动作携带该 web_id，经 Resolve 解析到同一会话——状态由句柄显式传递；
 //   - 底层以"两态出租"驱动资源复用：活跃操作用热页（零重建、状态真），空闲超 hotTTL
@@ -76,27 +78,31 @@ func (s *webSession) markUse() { s.lastUsed.Store(time.Now().UnixNano()) }
 //   - 会话结束显式 Close 归还；冷态会话超过 idleTTL 仍无使用则被彻底回收（连检查点
 //     一并丢弃），防 web_id 无限累积。
 //
-// 传输层适配（MCP/HTTP）不在此处，见 mcp.go / http.go。
-type WebSessionManager struct {
-	provider WebProvider
-	hotTTL   time.Duration // 热态宽限：空闲超过则冷提交
-	idleTTL  time.Duration // 冷态会话最长存活：超过则彻底回收
+// 底层资源来源以 provider.WebProvider 注入，可热替换：本地 Nest、单个 Spider、远端
+// 云端编排后端实现同一契约即可透明切换，本机核心逻辑零改动。
+type Manager struct {
+	pvd     provider.WebProvider
+	hotTTL  time.Duration // 热态宽限：空闲超过则冷提交
+	idleTTL time.Duration // 冷态会话最长存活：超过则彻底回收
 	// callTimeout 每一次工具调用的总超时（传输层 wrapTool 兜底用）。
 	callTimeout time.Duration
 
-	mu     sync.Mutex
-	live   map[string]*webSession
-	closed atomic.Bool
-	done   chan struct{}
+	mu       sync.Mutex
+	sessions map[string]*entry
+	closed   atomic.Bool
+	done     chan struct{}
 }
 
-// NewWebSessionManager 创建以"会话"为单位的冷热两态管理器。
-//   - cfg：Nest 池容量（MaxSpiders=并发上限，见 NestConfig 注释）；
-//   - create：惰性创建一只蜘蛛（每浏览器实例）的工厂；
+// New 用给定的 provider 构造冷热两态会话管理器，并把三段时长补足默认值后
+// 启动异步回收。
+//   - provider：会话底层资源来源（Nest / 单蛛 / 远端云端后端）；
 //   - callTimeout：单次工具调用总超时；<=0 默认 30s；
 //   - hotTTL：热态空闲多少后冷提交；<=0 默认 60s；
 //   - idleTTL：冷态会话无使用多久彻底回收；<=0 默认 10 分钟。
-func NewWebSessionManager[T any, S nest.NestSpider[T]](cfg config.NestConfig, create func() (S, error), callTimeout, hotTTL, idleTTL time.Duration) (*WebSessionManager, error) {
+func New(pvd provider.WebProvider, callTimeout, hotTTL, idleTTL time.Duration) (*Manager, error) {
+	if pvd == nil {
+		return nil, errors.New("session: provider 不能为空")
+	}
 	if callTimeout <= 0 {
 		callTimeout = 30 * time.Second
 	}
@@ -106,16 +112,12 @@ func NewWebSessionManager[T any, S nest.NestSpider[T]](cfg config.NestConfig, cr
 	if idleTTL <= 0 {
 		idleTTL = 10 * time.Minute
 	}
-	n, err := nest.NewOrchardFromConfig(cfg, create)
-	if err != nil {
-		return nil, err
-	}
-	m := &WebSessionManager{
-		provider:    NewNestProvider(n),
+	m := &Manager{
+		pvd:         pvd,
 		callTimeout: callTimeout,
 		hotTTL:      hotTTL,
 		idleTTL:     idleTTL,
-		live:        make(map[string]*webSession),
+		sessions:    make(map[string]*entry),
 		done:        make(chan struct{}),
 	}
 	go m.sweep()
@@ -131,14 +133,14 @@ func newWebID() (string, error) {
 }
 
 // Open 借一个会话并分配 web_id（默认租约：非 pinned、无粘性）。
-func (m *WebSessionManager) Open(ctx context.Context) (string, error) {
+func (m *Manager) Open(ctx context.Context) (string, error) {
 	return m.OpenWithOptions(ctx, OpenOptions{})
 }
 
 // OpenWithOptions 按选项借一个会话：拿令牌 → 分配 web_id → 建热态租约。
 // 池满时按 ctx 阻塞/取消；排空/关闭时返回相应错误。
-func (m *WebSessionManager) OpenWithOptions(ctx context.Context, opts OpenOptions) (string, error) {
-	handle, err := m.provider.AcquireWeb(ctx, AcquireOptions{Sticky: opts.Sticky, KeepHot: opts.Pinned})
+func (m *Manager) OpenWithOptions(ctx context.Context, opts OpenOptions) (string, error) {
+	handle, err := m.pvd.AcquireWeb(ctx, provider.AcquireOptions{Sticky: opts.Sticky, KeepHot: opts.Pinned})
 	if err != nil {
 		return "", err
 	}
@@ -147,7 +149,7 @@ func (m *WebSessionManager) OpenWithOptions(ctx context.Context, opts OpenOption
 		_ = handle.Release()
 		return "", err
 	}
-	s := &webSession{
+	s := &entry{
 		id:     id,
 		handle: handle,
 		sticky: opts.Sticky,
@@ -164,7 +166,7 @@ func (m *WebSessionManager) OpenWithOptions(ctx context.Context, opts OpenOption
 		_ = handle.Release()
 		return "", errSessionClosed
 	}
-	m.live[id] = s
+	m.sessions[id] = s
 	m.mu.Unlock()
 
 	log.Printf("[session] 借网成功 web_id=%s inUse=%d", id, m.inUse())
@@ -174,9 +176,9 @@ func (m *WebSessionManager) OpenWithOptions(ctx context.Context, opts OpenOption
 // Resolve 按 web_id 取回"能执行操作的活页"。
 // 热态直接返回并刷新使用时间；冷态则按检查点重水化（重开一片活页）后再返回。
 // 两个并行 Resolve 会在会话级互斥锁上排队，避免同一会话叠开多片页。
-func (m *WebSessionManager) Resolve(ctx context.Context, webID string) (*web.Web, error) {
+func (m *Manager) Resolve(ctx context.Context, webID string) (*web.Web, error) {
 	m.mu.Lock()
-	s, ok := m.live[webID]
+	s, ok := m.sessions[webID]
 	m.mu.Unlock()
 	if !ok {
 		return nil, ErrWebNotFound
@@ -194,11 +196,11 @@ func (m *WebSessionManager) Resolve(ctx context.Context, webID string) (*web.Web
 
 // hydrate 冷→热：从 provider 重借一片页，重放检查点，切回热态。
 // 调用方必须已持有 s.mu。
-func (m *WebSessionManager) hydrate(ctx context.Context, s *webSession) (*web.Web, error) {
+func (m *Manager) hydrate(ctx context.Context, s *entry) (*web.Web, error) {
 	if s.cp == nil {
 		return nil, ErrWebNotFound
 	}
-	handle, err := m.provider.AcquireWeb(ctx, AcquireOptions{Sticky: s.sticky, KeepHot: true})
+	handle, err := m.pvd.AcquireWeb(ctx, provider.AcquireOptions{Sticky: s.sticky, KeepHot: true})
 	if err != nil {
 		return nil, err
 	}
@@ -217,9 +219,9 @@ func (m *WebSessionManager) hydrate(ctx context.Context, s *webSession) (*web.We
 
 // Pin 钉住/取消钉住一个会话。钉住后不参与自动冷提交；钉住一个冷态会话会立即重水化，
 // 使错误日志、后续操作立即可用。取消钉住不强制提交，由下一轮 hotTTL 决定。
-func (m *WebSessionManager) Pin(webID string, v bool) error {
+func (m *Manager) Pin(webID string, v bool) error {
 	m.mu.Lock()
-	s, ok := m.live[webID]
+	s, ok := m.sessions[webID]
 	m.mu.Unlock()
 	if !ok {
 		return ErrWebNotFound
@@ -242,11 +244,11 @@ func (m *WebSessionManager) Pin(webID string, v bool) error {
 
 // Close 把 web_id 对应的会话归还（幂等；已归还/不存在返回 ErrWebNotFound）。
 // 热态直接归还活页；冷态释放检查点。底层若发现页失效会自动销毁重建。
-func (m *WebSessionManager) Close(webID string) error {
+func (m *Manager) Close(webID string) error {
 	m.mu.Lock()
-	s, ok := m.live[webID]
+	s, ok := m.sessions[webID]
 	if ok {
-		delete(m.live, webID)
+		delete(m.sessions, webID)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -269,28 +271,28 @@ func (m *WebSessionManager) Close(webID string) error {
 }
 
 // List 返回当前仍占用（未归还）的 web_id 列表。
-func (m *WebSessionManager) List() []string {
+func (m *Manager) List() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ids := make([]string, 0, len(m.live))
-	for id := range m.live {
+	ids := make([]string, 0, len(m.sessions))
+	for id := range m.sessions {
 		ids = append(ids, id)
 	}
 	return ids
 }
 
 // Stats 委托给底层 provider，供外部/调度读取池容量与在途量。
-func (m *WebSessionManager) Stats() PoolState { return m.provider.Stats() }
+func (m *Manager) Stats() provider.PoolState { return m.pvd.Stats() }
 
 // CallTimeout 返回每一次工具调用的总超时（传输层 wrapTool 用）。
-func (m *WebSessionManager) CallTimeout() time.Duration { return m.callTimeout }
+func (m *Manager) CallTimeout() time.Duration { return m.callTimeout }
 
 // inUse 返回当前在途（热持有活页）的会话张数。
-func (m *WebSessionManager) inUse() int {
+func (m *Manager) inUse() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
-	for _, s := range m.live {
+	for _, s := range m.sessions {
 		if s.handle != nil {
 			n++
 		}
@@ -301,7 +303,7 @@ func (m *WebSessionManager) inUse() int {
 // sweep 两档异步回收：
 //   - hotTick：扫描热态空闲超 hotTTL 的会话→冷提交（捕获检查点 + 归还浏览器）；
 //   - coldTick：扫描冷态会话无使用超 idleTTL 的→彻底删除（连检查点一起），防 web_id 累积。
-func (m *WebSessionManager) sweep() {
+func (m *Manager) sweep() {
 	// 热档轮询粒度取小值以便及时回收闲置浏览器（不因 hotTTL 偏大而推迟太多）。
 	hotTick := m.hotTTL / 2
 	if hotTick < time.Second {
@@ -325,11 +327,11 @@ func (m *WebSessionManager) sweep() {
 }
 
 // commitIdleHot 冷提交所有"未钉住 + 热态 + 空闲超 hotTTL"的会话。
-func (m *WebSessionManager) commitIdleHot() {
+func (m *Manager) commitIdleHot() {
 	now := time.Now().UnixNano()
 	m.mu.Lock()
-	var cands []*webSession
-	for _, s := range m.live {
+	var cands []*entry
+	for _, s := range m.sessions {
 		if s.state.Load() == stateHot && !s.pinned.Load() &&
 			now-s.lastUsed.Load() >= int64(m.hotTTL) {
 			cands = append(cands, s)
@@ -344,7 +346,7 @@ func (m *WebSessionManager) commitIdleHot() {
 
 // commitOne 对一个热会话做冷提交：捕获检查点→释放浏览器→切冷态。
 // 捕获失败时降级：直接把页归还、仍切冷态（仅保留身份，放弃检查点）。
-func (m *WebSessionManager) commitOne(s *webSession) {
+func (m *Manager) commitOne(s *entry) {
 	s.mu.Lock()
 	if s.handle == nil {
 		s.mu.Unlock() // 已被并发处理（如 Close）
@@ -381,14 +383,14 @@ func (m *WebSessionManager) commitOne(s *webSession) {
 
 // expireCold 回收"冷态 + 无使用超 idleTTL"的会话（连检查点一起丢弃）。
 // 冷态不占浏览器，理论上可长期存续；此处仅兜底防 web_id/检查点无限累积。
-func (m *WebSessionManager) expireCold() {
+func (m *Manager) expireCold() {
 	now := time.Now().UnixNano()
 	m.mu.Lock()
 	var ids []string
-	for id, s := range m.live {
+	for id, s := range m.sessions {
 		if s.state.Load() == stateCold && now-s.lastUsed.Load() >= int64(m.idleTTL) {
 			ids = append(ids, id)
-			delete(m.live, id)
+			delete(m.sessions, id)
 		}
 	}
 	m.mu.Unlock()
@@ -399,18 +401,18 @@ func (m *WebSessionManager) expireCold() {
 
 // Shutdown 停回收 → 归还全部在途热租约 → 排空 → 关闭整个 provider。
 // 流程结束后管理器不可再用。
-func (m *WebSessionManager) Shutdown() {
+func (m *Manager) Shutdown() {
 	if !m.closed.CompareAndSwap(false, true) {
 		return
 	}
 	close(m.done)
 
 	m.mu.Lock()
-	sessions := make([]*webSession, 0, len(m.live))
-	for _, s := range m.live {
+	sessions := make([]*entry, 0, len(m.sessions))
+	for _, s := range m.sessions {
 		sessions = append(sessions, s)
 	}
-	m.live = make(map[string]*webSession)
+	m.sessions = make(map[string]*entry)
 	m.mu.Unlock()
 
 	for _, s := range sessions {
@@ -424,10 +426,10 @@ func (m *WebSessionManager) Shutdown() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := m.provider.Drain(ctx); err != nil {
+	if err := m.pvd.Drain(ctx); err != nil {
 		log.Printf("[session] 关停 drain 失败: %v", err)
 	}
-	if err := m.provider.Close(); err != nil {
+	if err := m.pvd.Close(); err != nil {
 		log.Printf("[session] 关停浏览器池失败: %v", err)
 	}
 	log.Printf("[session] manager 已关停, 全部会话已归还")

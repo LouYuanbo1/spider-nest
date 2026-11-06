@@ -47,19 +47,6 @@ type Weaver struct {
 	busy atomic.Int64
 }
 
-// WebPoolStats 是一次蜘蛛网池占用情况的只读快照。
-//   - Capacity：网池上限（cap(webs)），即本蜘蛛可并发的页面数；
-//   - Busy：当前已借出的网数。
-//
-// Available() 即"还能立即借出几张网"（含空槽可即时新建），供选蛛/限流决策。
-type WebPoolStats struct {
-	Capacity int
-	Busy     int
-}
-
-// Available 返回当前无需阻塞即可再借出的网数（= 池余量，空槽也算可即时新建）。
-func (s WebPoolStats) Available() int { return s.Capacity - s.Busy }
-
 // WebPoolStats 返回当前网池占用快照；接入 Spider 契约后，供 Nest 在选蛛时
 // 优先挑一只有余量（Available>0）的蜘蛛，避免抢到网全满的蜘蛛再干等。
 func (s *Weaver) WebPoolStats() WebPoolStats {
@@ -104,7 +91,7 @@ func WithUserMode(b bool) WeaverOption {
 	return func(c *config.SpiderConfig) { c.UserMode = b }
 }
 
-func NewWeaver(opts ...WeaverOption) (Spider, error) {
+func NewWeaver(opts ...WeaverOption) (*Weaver, error) {
 	var cfg config.SpiderConfig
 	for _, opt := range opts {
 		if opt != nil {

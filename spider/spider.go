@@ -30,3 +30,16 @@ type Spider interface {
 	// 回调 fn 在前、监听规则为可选变参：不需要监听时直接传 fn 即可。
 	WithHijack(fn func(Spider) error, rules ...hijack.HijackRule) error
 }
+
+// WebPoolStats 是一次蜘蛛网池占用情况的只读快照。
+//   - Capacity：网池上限（cap(webs)），即本蜘蛛可并发的页面数；
+//   - Busy：当前已借出的网数。
+//
+// Available() 即"还能立即借出几张网"（含空槽可即时新建），供选蛛/限流决策。
+type WebPoolStats struct {
+	Capacity int
+	Busy     int
+}
+
+// Available 返回当前无需阻塞即可再借出的网数（= 池余量，空槽也算可即时新建）。
+func (w WebPoolStats) Available() int { return w.Capacity - w.Busy }

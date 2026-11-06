@@ -14,7 +14,9 @@ import (
 	"github.com/LouYuanbo1/spider-nest/agent"
 	"github.com/LouYuanbo1/spider-nest/agent/mnemo/fs"
 	"github.com/LouYuanbo1/spider-nest/config"
+	"github.com/LouYuanbo1/spider-nest/provider"
 	"github.com/LouYuanbo1/spider-nest/server"
+	"github.com/LouYuanbo1/spider-nest/session"
 	"github.com/LouYuanbo1/spider-nest/spider"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -62,15 +64,19 @@ func main() {
 	// 统一"显式状态句柄"模型：agent 侧 MCP 客户端首次动作前自动借一张网并缓存 web_id，
 	// 之后所有浏览器操作都携带同一 web_id。底层为 Nest（多浏览器池），一用户一网独占
 	// 一个浏览器实例，会话结束 / 进程退出时由 manager 兜底归还。
-	mgr, err := server.NewWebSessionManager(
-		nestConfig,
-		func() (*spider.Weaver, error) {
-			s, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
-			if err != nil {
-				return nil, err
-			}
-			return s.(*spider.Weaver), nil
-		},
+	res, err := provider.NewNestFromConfig(nestConfig, func() (*spider.Weaver, error) {
+		s, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	})
+	if err != nil {
+		fmt.Printf("Error creating resource provider: %v", err)
+		return
+	}
+	mgr, err := session.New(
+		res,
 		appcfg.Spider.OperationTimeout,
 		60*time.Second, // hotTTL：热页空闲多久后冷提交
 		10*time.Minute, // idleTTL：冷态会话无使用多久后彻底回收
