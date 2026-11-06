@@ -176,7 +176,7 @@ func (m *Manager) OpenWithOptions(ctx context.Context, opts OpenOptions) (string
 // Resolve 按 web_id 取回"能执行操作的活页"。
 // 热态直接返回并刷新使用时间；冷态则按检查点重水化（重开一片活页）后再返回。
 // 两个并行 Resolve 会在会话级互斥锁上排队，避免同一会话叠开多片页。
-func (m *Manager) Resolve(ctx context.Context, webID string) (*web.Web, error) {
+func (m *Manager) Resolve(ctx context.Context, webID string) (web.Web, error) {
 	m.mu.Lock()
 	s, ok := m.sessions[webID]
 	m.mu.Unlock()
@@ -196,7 +196,7 @@ func (m *Manager) Resolve(ctx context.Context, webID string) (*web.Web, error) {
 
 // hydrate 冷→热：从 provider 重借一片页，重放检查点，切回热态。
 // 调用方必须已持有 s.mu。
-func (m *Manager) hydrate(ctx context.Context, s *entry) (*web.Web, error) {
+func (m *Manager) hydrate(ctx context.Context, s *entry) (web.Web, error) {
 	if s.cp == nil {
 		return nil, ErrWebNotFound
 	}

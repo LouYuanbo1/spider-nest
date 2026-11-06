@@ -105,8 +105,8 @@ func typeLikeHuman(el *rod.Element, text string, clearFlag bool) error {
 // typeText 将文本输入到元素；clearFlag 为 true 时先清空原有内容。
 // 使用 rod 原生键盘事件触发真实输入，对 React/Vue 受控组件友好。
 // 开启 humanize 时走逐字打字（见 typeLikeHuman），否则一次性写入。
-func (w *Web) typeText(el *rod.Element, text string, clearFlag bool) error {
-	if !w.humanize {
+func (p *Page) typeText(el *rod.Element, text string, clearFlag bool) error {
+	if !p.humanize {
 		if clearFlag {
 			if err := el.SelectAllText(); err != nil {
 				return err
@@ -138,16 +138,16 @@ func inputEffective(el *rod.Element, text string) bool {
 	return strings.Contains(got, strings.TrimSpace(text))
 }
 
-func (w *Web) inputToElement(el *rod.Element, text string, clearFlag bool) (bool, error) {
-	if err := w.typeText(el, text, clearFlag); err != nil {
+func (p *Page) inputToElement(el *rod.Element, text string, clearFlag bool) (bool, error) {
+	if err := p.typeText(el, text, clearFlag); err != nil {
 		return false, err
 	}
 	return inputEffective(el, text), nil
 }
 
 // DoInput 在网持有的页面上以 CSS 选择器定位输入框输入文本；返回是否真正写入成功
-func (w *Web) doInput(ctx context.Context, a *action.Input) (bool, error) {
-	page := w.page.Context(ctx)
+func (p *Page) doInput(ctx context.Context, a *action.Input) (bool, error) {
+	page := p.page.Context(ctx)
 	var el *rod.Element
 	var err error
 	switch a.Type {
@@ -161,27 +161,27 @@ func (w *Web) doInput(ctx context.Context, a *action.Input) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("未找到输入框 %q: %v", a.Selector, err)
 	}
-	return w.inputToElement(el, a.Text, a.Clear)
+	return p.inputToElement(el, a.Text, a.Clear)
 }
 
-func (w *Web) DoInput(
+func (p *Page) DoInput(
 	ctx context.Context,
 	a *action.Input,
 ) (bool, error) {
-	return w.timeoutResultWrapper(
+	return p.timeoutResultWrapper(
 		ctx,
 		a,
-		w.doInput,
+		p.doInput,
 	)
 }
 
 // DoInputByAX 在网持有的页面上通过可访问性语义（role/name）或后端 DOM 节点 ID 精准定位输入框并输入文本；
 // 返回是否真正写入成功
-func (w *Web) doInputByAX(
+func (p *Page) doInputByAX(
 	ctx context.Context,
 	a *action.InputByAXTree,
 ) (bool, error) {
-	page := w.page.Context(ctx)
+	page := p.page.Context(ctx)
 	var err error
 	backendDOMNodeID := a.BackendDOMNodeID
 	if backendDOMNodeID == 0 {
@@ -197,16 +197,16 @@ func (w *Web) doInputByAX(
 	if err != nil {
 		return false, fmt.Errorf("解析节点 %d 失败: %v", backendDOMNodeID, err)
 	}
-	return w.inputToElement(el, a.Text, a.Clear)
+	return p.inputToElement(el, a.Text, a.Clear)
 }
 
-func (w *Web) DoInputByAX(
+func (p *Page) DoInputByAX(
 	ctx context.Context,
 	a *action.InputByAXTree,
 ) (bool, error) {
-	return w.timeoutResultWrapper(
+	return p.timeoutResultWrapper(
 		ctx,
 		a,
-		w.doInputByAX,
+		p.doInputByAX,
 	)
 }

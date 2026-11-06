@@ -46,7 +46,7 @@ func (p *SpiderProvider) Stats() PoolState {
 }
 
 // lease 把借到的网装配成 WebHandle：成功封装即计 busy；Release 把网还回蜘蛛（幂等）。
-func (p *SpiderProvider) lease(w *web.Web) *WebHandle {
+func (p *SpiderProvider) lease(w *web.Page) *WebHandle {
 	p.busy.Add(1)
 	var once sync.Once
 	var releaseErr error

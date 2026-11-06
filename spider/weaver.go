@@ -25,13 +25,13 @@ var _ Spider = (*Weaver)(nil)
 // 是 Spider 契约的基础实现。创意类比：织网蜘蛛(orb-weaver)牢牢守住一张网，
 // 捕食源于网，本类也把所有抓取动作收敛在这几张页面上。
 //
-// 每张页面被封装成一张轻量的 web.Web（"网"）：网才真正持有并操作页面。
+// 每张页面被封装成一张轻量的 web.Page（"网"，满足契约 web.Web）：网才真正持有并操作页面。
 // Weaver 只负责启动/持有唯一一个浏览器进程，并通过网池并发管理多张页面，
-// 把抓取任务整体委托给 Web 去执行。动作与结果类型统一来自 web 包。
+// 把抓取任务整体委托给一张张网（*web.Page）去执行。动作与结果类型统一来自 web 包。
 type Weaver struct {
 	browser   *rod.Browser
-	webs      chan *web.Web            // 网池：桶内以 nil 表示为尚未填实的空槽位
-	create    func() (*web.Web, error) // 创建网的函数
+	webs      chan *web.Page            // 网池：桶内以 nil 表示为尚未填实的空槽位
+	create    func() (*web.Page, error) // 创建网的函数
 	logger    *slog.Logger
 	humanize  bool
 	opTimeout time.Duration
@@ -154,7 +154,7 @@ func NewWeaver(opts ...WeaverOption) (*Weaver, error) {
 	if cfg.PagePoolLimit < 1 {
 		cfg.PagePoolLimit = 1
 	}
-	s.webs = make(chan *web.Web, cfg.PagePoolLimit)
+	s.webs = make(chan *web.Page, cfg.PagePoolLimit)
 	for i := 0; i < cfg.PagePoolLimit; i++ {
 		s.webs <- nil
 	}
@@ -163,11 +163,11 @@ func NewWeaver(opts ...WeaverOption) (*Weaver, error) {
 	return s, nil
 }
 
-// createWeb 为网池创建一张可用网（Web）：在蜘蛛自己的浏览器实例上新建一张
+// createWeb 为网池创建一张可用网（Page）：在蜘蛛自己的浏览器实例上新建一张
 // 空白标签页作为"网"，并注入蜘蛛的人类化与超时行为配置。
 // 页面经由 stealth.Page 创建：其对每张新页面调用 EvalOnNewDocument 注入 stealth JS，
 // 抹平 navigator.webdriver / window.chrome / plugins 等可被反爬识别的自动化特征。
-func (s *Weaver) createWeb() (*web.Web, error) {
+func (s *Weaver) createWeb() (*web.Page, error) {
 	page, err := stealth.Page(s.browser)
 	if err != nil {
 		return nil, fmt.Errorf("创建页面失败: %v", err)
@@ -178,11 +178,11 @@ func (s *Weaver) createWeb() (*web.Web, error) {
 	), nil
 }
 
-// AcquireCtx 派一张网：从网池取一张可复用的页面（轻量，封装为 Web），
+// AcquireCtx 派一张网：从网池取一张可复用的页面（轻量，封装为 Page），
 // 必要时新建，池满时阻塞等待，直到有网被 Release 放回。等待期间支持
 // 通过 ctx 取消；蜘蛛关闭后立即返回 ErrClosed，而非永久阻塞（#13）。
 // 与 Nest.Acquire（派一只蜘蛛）结构对齐。
-func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Web, error) {
+func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Page, error) {
 	if s.closed.Load() {
 		return nil, ErrClosed
 	}
@@ -210,7 +210,7 @@ func (s *Weaver) AcquireCtx(ctx context.Context) (*web.Web, error) {
 }
 
 // Acquire 派一张网：等价于以 Background 上下文调用 AcquireCtx。
-func (s *Weaver) Acquire() (*web.Web, error) {
+func (s *Weaver) Acquire() (*web.Page, error) {
 	return s.AcquireCtx(context.Background())
 }
 
@@ -218,7 +218,7 @@ func (s *Weaver) Acquire() (*web.Web, error) {
 // 若网已失效（页面连接关闭导致），则销毁整张网并补建一张新的，
 // 避免劣化实例被反复复用到后续任务上。创建失败会归还空槽位避免
 // 池容量泄漏；蜘蛛已关闭时直接关页而非塞回已关闭的池。
-func (s *Weaver) Release(w *web.Web) error {
+func (s *Weaver) Release(w *web.Page) error {
 	if w == nil {
 		return nil
 	}
@@ -253,7 +253,7 @@ func (s *Weaver) Release(w *web.Web) error {
 // 网都会被放回池中供复用，从根上避免"借了不还"导致的池占满死锁。
 // 需要跨操作/跨 goroutine 长期持有网（如 agent 自动化会话）时，
 // 再改用 Acquire/Release。与 Nest.BorrowSpider 结构对齐。
-func (s *Weaver) BorrowWeb(fn func(*web.Web) error) error {
+func (s *Weaver) BorrowWeb(fn func(*web.Page) error) error {
 	w, err := s.Acquire()
 	if err != nil {
 		return err
@@ -268,7 +268,7 @@ func (s *Weaver) BorrowWeb(fn func(*web.Web) error) error {
 func (s *Weaver) Crawl(ctx context.Context, actions []action.Action) ([]action.ActionResult, error) {
 	var results []action.ActionResult
 	err := s.BorrowWeb(
-		func(w *web.Web) error {
+		func(w *web.Page) error {
 			var err error
 			results, err = w.RunActions(ctx, actions)
 			return err
@@ -305,7 +305,7 @@ func (s *Weaver) CrawlConcurrent(
 }
 
 // Close 关闭爬虫：标记为已关闭、唤醒阻塞中的 Acquire 令其返回
-// ErrClosed，清理池中空闲的网（Web/页面），最后释放浏览器资源。
+// ErrClosed，清理池中空闲的网（Page/页面），最后释放浏览器资源。
 // 幂等：重复调用直接返回。
 func (s *Weaver) Close() error {
 	s.logger.Info("关闭爬虫")

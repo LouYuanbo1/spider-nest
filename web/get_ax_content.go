@@ -17,7 +17,7 @@ import (
 //   - table/grid 还原为 Markdown 表格（表头/分隔线）；
 //   - 保留 node_id（即 BackendDOMNodeID，与 get_interactives 的 node_id 同源），
 //     使 LLM 拿到内容后可直接用 click_by_node_id / input_by_node_id 交互。
-func (w *Web) getAXContent(ctx context.Context, _ *action.GetAXContent) (string, error) {
+func (w *Page) getAXContent(ctx context.Context, _ *action.GetAXContent) (string, error) {
 	p := w.page.Context(ctx)
 	result, err := getFullAXTree(p)
 	if err != nil {
@@ -33,6 +33,6 @@ func (w *Web) getAXContent(ctx context.Context, _ *action.GetAXContent) (string,
 	}), nil
 }
 
-func (w *Web) GetAXContent(ctx context.Context) (string, error) {
-	return w.timeoutResultWrapper(ctx, &action.GetAXContent{}, w.getAXContent)
+func (p *Page) GetAXContent(ctx context.Context) (string, error) {
+	return p.timeoutResultWrapper(ctx, &action.GetAXContent{}, p.getAXContent)
 }
