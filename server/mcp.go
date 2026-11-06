@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/LouYuanbo1/spider-nest/action"
+	"github.com/LouYuanbo1/spider-nest/session"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -23,13 +24,13 @@ import (
 // 并把返回值填写到 CallToolResult 的 structuredContent / content 中。
 type toolRegistry struct {
 	// m 是底层会话管理器：既按 web_id 解析网，又承载借/还/列生命周期工具。
-	m *WebSessionManager
+	m *session.Manager
 }
 
 // NewMCPServer 用"显式状态句柄"模式创建 MCP 服务器（统一入口）：
 // 浏览器工具统一要求携带 web_id，另注册 open_web_tool / close_web_tool / list_webs_tool
-// 生命周期工具供模型借还网。底层网来自 WebSessionManager，一个用户独占一张网。
-func NewMCPServer(m *WebSessionManager, implementation *mcp.Implementation, opts *mcp.ServerOptions) *mcp.Server {
+// 生命周期工具供模型借还网。底层网来自 session.Manager，一个用户独占一张网。
+func NewMCPServer(m *session.Manager, implementation *mcp.Implementation, opts *mcp.ServerOptions) *mcp.Server {
 	tr := &toolRegistry{m: m}
 	srv := buildServer(tr, implementation, opts)
 	registerLifecycleTools(srv, tr)

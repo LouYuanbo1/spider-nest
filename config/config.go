@@ -63,7 +63,7 @@ type SpiderConfig struct {
 	PagePoolLimit    int           `yaml:"page_pool_limit"`
 }
 
-// NestConfig 描述"一座巢"的容量，是 Nest 与上层管理器（如 server.WebSessionManager）
+// NestConfig 描述"一座巢"的容量，是 Nest 与上层管理器（如 session.Manager）
 // 共用的配置类型。放在 config 包而非 nest 包，是因为依赖方向本就允许：nest 已依赖
 // config，config 不依赖 nest，故此处定义可被 nest 直接复用而不会成环。
 type NestConfig struct {

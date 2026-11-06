@@ -97,7 +97,7 @@ func isLifecycleTool(name string) bool {
 }
 
 // ensureWeb 惰性借一张网：首次浏览器动作前调用 open_web_tool 并缓存返回的 web_id。
-// 加锁保证并发/重复触发时只借一次；进程退出时由其底层 WebSessionManager 兜底归还。
+// 加锁保证并发/重复触发时只借一次；进程退出时由其底层会话管理器兜底归还。
 func (c *Client) ensureWeb(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
