@@ -10,6 +10,9 @@ import (
 	"github.com/LouYuanbo1/spider-nest/spider"
 )
 
+var _ Nest[spider.Weaver, *spider.Weaver] = (*Grove[spider.Weaver, *spider.Weaver])(nil)
+var _ Colony[spider.Weaver, *spider.Weaver] = (*Grove[spider.Weaver, *spider.Weaver])(nil)
+
 // Grove 小树林蜘蛛巢：一座朴素的林子(Grove)里住着很多只蜘蛛(spider)。每只蜘蛛都
 // 拥有自己独立的浏览器实例与页面池（"网"），因此树林维护的是一个蜘蛛池（即浏
 // 览器池）：并发上限 = 林内蜘蛛数。相比进阶的 Orchard，Grove 是"最普通"的基础

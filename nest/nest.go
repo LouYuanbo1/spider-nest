@@ -50,3 +50,22 @@ type Colony[T any, S NestSpider[T]] interface {
 	// 把各组分别委托给该蜘蛛内不同的网并发执行，跑完自动归还。hijackCfgs 可选。
 	CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action, hijackCfgs ...config.HijackConfig) ([][]action.ActionResult, error)
 }
+
+// IdlePicker 是"余量感知巢"的窄接口：在 Nest 生命周期契约之上，再暴露原子化的
+// "按谓词挑有余量的蜘蛛"原语 AcquireIf。
+//
+// 对上层（如 server.NestProvider）而言，它把"挑到一只有余量的蜘蛛"这件事变成
+// 一次在巢内同一把锁里完成的原子操作——不存在"先取一只、再查余量、不够放回再试"
+// 的竞态窗口。Grove（chan 信号量、随手取一只）不含此原语，故只有 Orchard 满足
+// 本接口；语义上正对应"每蜘蛛养多网、多会话共享"的高压榨编排场景。
+type IdlePicker[T any, S NestSpider[T]] interface {
+	// AcquireIf 借一只满足 predicate 的蜘蛛；在同一把巢锁内原子完成筛选与占用。
+	// 返回的蜘蛛此刻必定满足 predicate，且为调用方独占（余量对它是单调不减的）。
+	AcquireIf(ctx context.Context, predicate func(S) bool) (S, error)
+	// Release 让一只织完的蜘蛛回巢（失效即销毁重建，语义同 Nest.Release）。
+	Release(s S) error
+	// Size 返回并发上限。
+	Size() int
+	// Close 关闭整座巢。
+	Close() error
+}
