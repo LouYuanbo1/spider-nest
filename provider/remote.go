@@ -22,9 +22,12 @@ var _ WebProvider = (*RemoteProvider)(nil)
 //
 // 编排粒度：放置决策收敛在本实现内部，与工具/会话层解耦——需要抽离成独立控制面进程时，
 // 把 pickNode 换成向注册中心查询即可，其余零改动。
+// （有意取舍：本项目刻意不内置 gRPC / 独立控制面；上生产时可把本端的静态节点地址列表
 //
-// 生命周期保障：为所有在途令牌维护一条后台心跳线，定期续期远端租约，
-// 抵消防业务界 face-to-节点 reaper 的失活回收；Release/Close 幂等归还。
+//	换成注册中心动态发现、并按需把 cloud/proto 的 net/rpc+gob 换为 gRPC，见其边界声明。）
+//
+// 生命周期保障：为所有在途令牌维护一条后台心跳线，定期续期远端租约，抵消防
+// 服务侧与云端节点两侧 reaper 的失活回收；Release/Close 幂等归还。
 type RemoteProvider struct {
 	conns []*client.Conn // 所有云端节点连接
 	// 心跳节奏

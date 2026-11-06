@@ -16,12 +16,13 @@
 ## 目录
 
 - [项目结构](#项目结构)
-- [架构：从资源池到可变 HTTP/MCP](#架构从资源池到可变-hhttpmcp)
+- [架构：从资源池到可变 HTTP/MCP](#架构从资源池到可变-httpmcp)
 - [核心亮点](#核心亮点)
 - [快速开始](#快速开始)
 - [使用示例](#使用示例)
 - [动作（Action）类型详解](#动作action类型详解)
 - [配置说明](#配置说明)
+- [云端部署：现状与缺口](#云端部署route-b现状与缺口)
 - [注意事项 / 安全](#注意事项--安全)
 
 ---
@@ -471,6 +472,48 @@ YAML / JSON 中 `type` 可选：`navigate` / `click` / `click_ax` / `input` / `i
 | `nest.spider_pool_limit` | 巢内可同时活动的蜘蛛（浏览器）数，即最大并发浏览器数 | `1` |
 | `model.api_key` | DeepSeek API Key | 推荐用 `AI_SPIDER_API_KEY` 环境变量 |
 | `mcp.base_url` | agent 侧工具调用所连接的远端 MCP HTTP 端点 | 如 `http://127.0.0.1:8080/mcp` |
+
+---
+
+## 云端部署（Route B）：现状与缺口
+
+> **决策**：本项目**刻意不内置** gRPC 编排控制面，以免给项目带来过重的依赖负担。Route B 目前是
+> "本仓库自足的最小云端形态"；要上生产规模化，请在**独立的新项目（外部控制面）**里补齐下面的缺口。
+
+### 现在已提供（按现有命令即可跑通的最小闭环）
+
+| 组件 | 位置 | 职责 |
+|------|------|------|
+| 云端节点 | `cloud/agent` | 一台节点进程 = 本地 Nest 池 + 薄 RPC 面；经 `net/rpc+gob` 暴露 借/跑/抓放检查点/还/续期/容量/取产物，并带租约失活 reaper 兜底回收 |
+| 会话侧调度口 | `provider/remote.go` | `RemoteProvider`：按各节点 `Stat` 余量挑节点借活页、后台心跳养在途租约、支持排空与优雅关停 |
+| 节点连接 / 活页代理 | `cloud/client` | `Conn` + `RemotePage`：把一纸令牌包装成 `web.Web` 的 RPC 代理，会话层几乎零差异 |
+| 线槽协议 | `cloud/proto` | 全部 RPC 载荷 + 动作/检查点的 gob 注册 + `PoolStat` 容量快照 |
+
+组合命令：
+
+```bash
+go run ./cmd/agent -addr :9001                         # 起一台云端节点
+go run ./cmd/server -agents "127.0.0.1:9001,10.0.0.5:9001"  # 会话侧把动作拍到节点上执行
+```
+
+（本地单进程形态 `go run ./cmd/server` 不传 `-agents`，即走 Route A 的 Nest 池。）
+
+### 刻意不内置的部分（这是有意的取舍）
+
+- **无 gRPC / 无独立控制面进程**：传输保持 `net/rpc+gob`（零新增重依赖）；"编排"仅收敛在
+  `provider.remote` 的 `pickNode` 那一段极薄的按余量挑节点逻辑里，内嵌在会话侧，不成独立服务。
+- 无服务发现 / 注册中心、无 TLS、无鉴权、无跨语言支持、无多租户隔离。
+
+### 云上生产部署需要你补什么（建议放独立新项目 / 外部设施）
+
+1. **注册与发现**：`RemoteProvider` 目前持静态节点地址列表；生产应换成从 Consul / etcd / K8s Endpoint
+   动态解析节点，让 `pickNode` 改为向注册中心查询即可（代码已预留该改口，见 `provider/remote.go` 注释）。
+2. **传输升级（如需跨语言 / 流式 / 治理）**：把 `cloud/proto` 的 `net/rpc+gob` 换为 gRPC。契约已按
+   方法 / 载荷隔离，改口集中在 `cloud/agent`（服务端）与 `cloud/client`（客户端）两个包，编排逻辑零改动。
+3. **安全加固**：`Node.*` 各 RPC 无鉴权、无 TLS；`FetchArtifact` 按路径直读节点文件，生产应改
+   对象存储 / 预签名短链，并在节点间叠加 mTLS 与鉴权。
+4. **弹性与治理**：把轮询式心跳升级为流式；补背压、deadline 透传、多租户配额与隔离，
+   并让滚动发布 / 缩容时的 `Drain` 钩子接入到编排平台。
 
 ---
 
