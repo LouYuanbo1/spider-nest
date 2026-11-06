@@ -12,6 +12,10 @@ import (
 	"github.com/LouYuanbo1/spider-nest/spider"
 )
 
+var _ Nest[spider.Weaver, *spider.Weaver] = (*Orchard[spider.Weaver, *spider.Weaver])(nil)
+var _ Colony[spider.Weaver, *spider.Weaver] = (*Orchard[spider.Weaver, *spider.Weaver])(nil)
+var _ IdlePicker[spider.Weaver, *spider.Weaver] = (*Orchard[spider.Weaver, *spider.Weaver])(nil)
+
 // Orchard 综合栖息池：一座果园(Orchard)里聚集着多种蜘蛛(spider)各自结网(Web)。
 // 与朴素的 Grove（以有缓冲 chan 为信号量、随手取一只）不同，Orchard 面向
 // "一只蜘蛛(浏览器)内养多张网、多会话共享"的高压榨场景：
@@ -20,7 +24,7 @@ import (
 //     可以在同一把锁内【按谓词挑一只符合条件的蜘蛛】并原子地"占用"，
 //     不存在"查匝余量后被争抢"的竞态窗口；
 //   - AcquireIf 是核心原语：调用方用闭包表达"我要一只有余量的蜘蛛"，由果园
-//     在空闲队列里筛出第一只满足者，或在空槽上惰性新建（新建结果同样复核）；
+//     在空闲队列里筛出第一只满足者，或在有并发余量时惰性新建（新建结果同样复核）；
 //   - 因此"队列成员 == 有余量"可被上层用作恒真不变量，predicate 退化为防御校验。
 //
 // 与 Grove 的取舍：
@@ -34,12 +38,12 @@ type Orchard[T any, S NestSpider[T]] struct {
 	logger *slog.Logger
 	create func() (S, error) // 建蜘蛛工厂：由调用方按具体类型与配置提供
 
-	mu        sync.Mutex
-	idle      *list.List    // 空闲队列：当前在池中可复用的活动蜘蛛（FIFO 复用）
-	freeEmpty int           // 尚未物化为蜘蛛的空槽数（可再惰性新建的数量）
-	capacity  int           // 并发上限（spiderSize）
-	closed    bool          // 已关闭：拒绝再借出，唤醒所有阻塞中的等待者
-	notify    chan struct{} // 广播唤醒通道：每次状态变更后关闭重建用于唤醒等待者
+	mu       sync.Mutex
+	idle     *list.List    // 空闲队列：当前在池中可复用的活动蜘蛛（FIFO 复用）
+	live     int           // 已物化的蜘蛛总数 = 空闲成员数 + 借出中数
+	capacity int           // 并发上限（spiderSize）
+	closed   bool          // 已关闭：拒绝再借出，唤醒所有阻塞中的等待者
+	notify   chan struct{} // 广播唤醒通道：每次状态变更后关闭重建用于唤醒等待者
 }
 
 // NewOrchard 创建一座果园：
@@ -47,9 +51,9 @@ type Orchard[T any, S NestSpider[T]] struct {
 //   - create：按具体指针类型 S 创建蜘蛛的工厂（如返回 *spider.Weaver）。
 //     S 的形状由约束 *T 锁死为指针，故调用方传 create 时 T 会被自动推断。
 //
-// 起初 spiderSize 个空槽（freeEmpty = spiderSize）：空槽表示"可取出并新建"，
-// 因此借出天然可阻塞——所有实例都被占用时取不到即等待。
-// 浏览器按需惰性启动，只有被借出并新建的蜘蛛才真正拉起 Chrome。
+// 起初 live=0（一座空园）：蜘蛛按需惰性启动，求而未得时才在 lock 内原子预留一个
+// 名额后锁外 create() 新建。能否新建以 live < capacity 为判据——上限永远被尊重，
+// live 同时可当作园的即时占用观测值。
 func NewOrchard[T any, S NestSpider[T]](spiderSize int, create func() (S, error)) (*Orchard[T, S], error) {
 	if spiderSize <= 0 {
 		return nil, errors.New("spiderSize 必须大于 0")
@@ -58,12 +62,12 @@ func NewOrchard[T any, S NestSpider[T]](spiderSize int, create func() (S, error)
 		return nil, errors.New("create 蜘蛛工厂不能为空")
 	}
 	return &Orchard[T, S]{
-		logger:    slog.Default().With("component", "orchard"),
-		create:    create,
-		idle:      list.New(),
-		freeEmpty: spiderSize,
-		capacity:  spiderSize,
-		notify:    make(chan struct{}),
+		logger:   slog.Default().With("component", "orchard"),
+		create:   create,
+		idle:     list.New(),
+		live:     0,
+		capacity: spiderSize,
+		notify:   make(chan struct{}),
 	}, nil
 }
 
@@ -96,8 +100,8 @@ func (o *Orchard[T, S]) broadcast() {
 }
 
 // AcquireIf 派一只"满足谓词"的蜘蛛：从空闲队列里挑第一只 predicate(sp)==true
-// 复用；若无现成符合者，则在一个空闲空槽上惰性新建（新建结果同样被谓词复核，
-// 不满足则放回并继续等待）。满（无可复用实例且无空槽）时阻塞等待，支持 ctx 取消。
+// 复用；若无现成符合者，则在有并发余量时惰性新建（新建结果同样被谓词复核，
+// 不满足则放回并继续等待）。满（无可复用实例且无并发余量）时阻塞等待，支持 ctx 取消。
 //
 // predicate 在持有 o.mu 的临界区内、与【借出+占用】原子地执行，因此不存在
 // "查到余量后被争抢"的竞态窗口。返回值确保此刻满足 predicate（新建路径的
@@ -121,16 +125,17 @@ func (o *Orchard[T, S]) AcquireIf(ctx context.Context, predicate func(S) bool) (
 			}
 		}
 
-		// 2) 无可复用者：若还有空槽则惰性新建。新建在锁外执行，避免持锁
-		//    阻塞别人等待；但空槽扣减与新建结果复核都在锁内判定。
-		if o.freeEmpty > 0 {
-			o.freeEmpty--
+		// 2) 无可复用者：若还有并发余量（live < capacity）则惰性新建。新建在锁外
+		//    执行，避免持锁阻塞别人等待；但"余量判定 + 名额预留"与新建结果复核
+		//    都在锁内原子完成，杜绝并发下越过 capacity 的过度新建。
+		if o.live < o.capacity {
+			o.live++
 			o.mu.Unlock()
 
 			created, err := o.create()
 			if err != nil {
 				o.mu.Lock()
-				o.freeEmpty++ // 创建失败，归还空槽，避免容量泄漏
+				o.live-- // 创建失败，把名额还回并发余量，避免容量泄漏
 				o.broadcast()
 				o.mu.Unlock()
 				return zero, err
@@ -160,8 +165,8 @@ func (o *Orchard[T, S]) AcquireIf(ctx context.Context, predicate func(S) bool) (
 }
 
 // Release 让一只织完的蜘蛛回园：把蜘蛛放回池中供复用，不销毁其浏览器。
-// 若蜘蛛已失效（浏览器/页面连接关闭导致），则销毁它并归还一个空槽
-// （freeEmpty++），由后续借出自动新建补上，避免劣化实例被反复复用。
+// 若蜘蛛已失效（浏览器/页面连接关闭导致），则销毁它并释放一个并发名额
+// （live--），由后续借出自动新建补上，避免劣化实例被反复复用。
 func (o *Orchard[T, S]) Release(s S) error {
 	if s == nil {
 		return nil
@@ -173,7 +178,7 @@ func (o *Orchard[T, S]) Release(s S) error {
 	} else {
 		o.logger.Warn("蜘蛛实例失效，销毁重建")
 		_ = s.Close()
-		o.freeEmpty++
+		o.live-- // 释放一个并发名额，供后续惰性新建补上
 	}
 	o.broadcast()
 	return nil

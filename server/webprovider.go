@@ -79,74 +79,36 @@ type WebProvider interface {
 	Close() error
 }
 
-// NestProvider 把本地 Nest（Grove 蜘蛛/浏览器池）适配成 WebProvider。
+// NestProvider 把本地 Nest（Orchard 果园：蜘蛛/浏览器池）适配成 WebProvider。
 //
-//	AcquireWeb 优先挑一只有余量的蜘蛛借出网，退化为两级阻塞路径（与旧实现一致）；
-//	返回的 handle.Release 先网还到所属浏览器、再浏览器还回池，任一失效按各层语义
-//	销毁重建；成功借出才计入 busy，用于 Stats 反映真实在途量。
+//	AcquireWeb 用 IdlePicker 的原子原语 AcquireIf 直接"挑一只有余量的蜘蛛"，
+//	省去 Grove 那种"随手取一只→查余量→不够放回再试"的轮询重试与两级阻塞兜底；
+//	归还走 handle.Release（先网还到所属浏览器、再浏览器还回果园），任一失效按各层
+//	语义销毁重建；成功借出才计入 busy，用于 Stats 反映真实在途量。
 type NestProvider[T any, S nest.NestSpider[T]] struct {
-	nested   *nest.Grove[T, S]
-	busy     atomic.Int64 // 当前成功借出、未归还的租约数
-	draining atomic.Bool  // 排空中：拒绝新租约（Stats.Ready=false）
+	nested   nest.IdlePicker[T, S] // 余量感知巢：AcquireIf 原子挑蛛
+	busy     atomic.Int64          // 当前成功借出、未归还的租约数
+	draining atomic.Bool           // 排空中：拒绝新租约（Stats.Ready=false）
 }
 
-// NewNestProvider 用一座 Grove 巢构造本地 WebProvider。
-func NewNestProvider[T any, S nest.NestSpider[T]](n *nest.Grove[T, S]) WebProvider {
-	return &NestProvider[T, S]{nested: n}
+// NewNestProvider 用一座 Orchard 果园构造本地 WebProvider。
+// 用 Orchard 而非 Grove：其 AcquireIf 在巢锁内原子完成"按余量筛选+占用"，
+// 天然契合本适配器"挑一只有余量的蜘蛛"的诉求。
+func NewNestProvider[T any, S nest.NestSpider[T]](o *nest.Orchard[T, S]) WebProvider {
+	return &NestProvider[T, S]{nested: o}
 }
 
 // Stats 返回 Nest 层级池占用快照：Capacity=巢内蜘蛛数，InUse=成功借出未归还数。
 func (p *NestProvider[T, S]) Stats() PoolState {
 	busy := p.busy.Load()
 	capacity := int64(p.nested.Size())
-	avail := capacity - busy
-	if avail < 0 {
-		avail = 0
-	}
+	avail := max(capacity-busy, 0)
 	return PoolState{
 		Capacity:  int(capacity),
 		InUse:     int(busy),
 		Available: int(avail),
 		Ready:     !p.draining.Load(),
 	}
-}
-
-// AcquireWeb 从巢借一只蜘蛛（浏览器）再从其上借一张网，返回 WebHandle。
-// 池满时按 ctx 阻塞/取消；排空中直接返回 ErrUnavailable。
-func (p *NestProvider[T, S]) AcquireWeb(ctx context.Context, opts AcquireOptions) (*WebHandle, error) {
-	if p.draining.Load() {
-		return nil, ErrUnavailable
-	}
-
-	// 优先挑一只有余量的蜘蛛（Available>0 即可立即借出网，不阻塞），避免抢到网全满
-	// 的蜘蛛后再干等。有限次尝试后仍抢不到余量，再退化到两级阻塞路径兜底。
-	for range 3 {
-		sp, err := p.nested.AcquireCtx(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if sp.WebPoolStats().Available() <= 0 {
-			_ = p.nested.Release(sp)
-			continue
-		}
-		w, err := sp.AcquireCtx(ctx)
-		if err != nil {
-			_ = p.nested.Release(sp)
-			return nil, err
-		}
-		return p.wrap(sp, w), nil
-	}
-
-	sp, err := p.nested.AcquireCtx(ctx)
-	if err != nil {
-		return nil, err
-	}
-	w, err := sp.AcquireCtx(ctx)
-	if err != nil {
-		_ = p.nested.Release(sp)
-		return nil, err
-	}
-	return p.wrap(sp, w), nil
 }
 
 // wrap 把"蜘蛛+网"装配成 WebHandle：成功封装即计 busy；Release 先把网还到所属浏览器、
@@ -166,6 +128,31 @@ func (p *NestProvider[T, S]) wrap(sp S, w *web.Web) *WebHandle {
 		return releaseErr
 	}
 	return &WebHandle{Token: providerToken(), Web: w, Release: release}
+}
+
+// AcquireWeb 借一只"还有余量"的蜘蛛并从中借一张网，返回 WebHandle。
+// 排空中直接返回 ErrUnavailable；池满时 AcquireIf 按 ctx 阻塞/取消。
+func (p *NestProvider[T, S]) AcquireWeb(ctx context.Context, opts AcquireOptions) (*WebHandle, error) {
+	if p.draining.Load() {
+		return nil, ErrUnavailable
+	}
+
+	// AcquireIf 在果园同一把锁内原子完成"按余量筛选 + 占用"：返回的蜘蛛此刻
+	// 必有余量且被本适配器独占（已出队）。独占意味着在要网之前，该蜘蛛的网池
+	// 余量只会因他人归还而增大、不会减小，故下面的 sp.AcquireCtx 必然立即成功。
+	// 无需旧实现那种轮询重试与两级阻塞兜底。
+	sp, err := p.nested.AcquireIf(ctx, func(s S) bool {
+		return s.WebPoolStats().Available() > 0
+	})
+	if err != nil {
+		return nil, err
+	}
+	w, err := sp.AcquireCtx(ctx)
+	if err != nil {
+		_ = p.nested.Release(sp) // 页借失败（极少），蜘蛛放回果园
+		return nil, err
+	}
+	return p.wrap(sp, w), nil
 }
 
 // Heartbeat 本地 provider 在进程内天然保活令牌，无远程析构，故为空操作。
@@ -197,7 +184,7 @@ func (p *NestProvider[T, S]) Close() error {
 
 // tokenCounter 是 providerToken 在随机源不可用时的兜底序列。仅用于保证令牌唯一性，
 // 不承载安全语义；正常情况下走 newWebID（crypto/rand）生成 128 位随机令牌。
-var tokenCounter uint64
+var tokenCounter atomic.Uint64
 
 // providerToken 生成一个够用且必成功的进程内令牌：优先 crypto/rand，异常时回退到
 // "时间戳+计数器"兜底，避免借租路径上因随机源异常而失败。
@@ -205,5 +192,5 @@ func providerToken() string {
 	if id, err := newWebID(); err == nil {
 		return id
 	}
-	return fmt.Sprintf("tok-%d-%d", time.Now().UnixNano(), atomic.AddUint64(&tokenCounter, 1))
+	return fmt.Sprintf("tok-%d-%d", time.Now().UnixNano(), tokenCounter.Add(1))
 }

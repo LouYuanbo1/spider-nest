@@ -106,7 +106,7 @@ func NewWebSessionManager[T any, S nest.NestSpider[T]](cfg config.NestConfig, cr
 	if idleTTL <= 0 {
 		idleTTL = 10 * time.Minute
 	}
-	n, err := nest.NewGroveFromConfig(cfg, create)
+	n, err := nest.NewOrchardFromConfig(cfg, create)
 	if err != nil {
 		return nil, err
 	}
