@@ -28,15 +28,15 @@ func clickLikeHuman(el *rod.Element) error {
 }
 
 // clickElement 在网持有的页面上对目标元素执行真人化点击
-func (w *Web) clickElement(el *rod.Element) error {
-	if !w.humanize {
+func (p *Page) clickElement(el *rod.Element) error {
+	if !p.humanize {
 		return el.Click(proto.InputMouseButtonLeft, 1)
 	}
 	return clickLikeHuman(el)
 }
 
-func (w *Web) doClick(ctx context.Context, a *action.Click) error {
-	page := w.page.Context(ctx)
+func (p *Page) doClick(ctx context.Context, a *action.Click) error {
+	page := p.page.Context(ctx)
 	var el *rod.Element
 	var err error
 	switch a.Type {
@@ -50,16 +50,16 @@ func (w *Web) doClick(ctx context.Context, a *action.Click) error {
 	if err != nil {
 		return fmt.Errorf("未找到元素 %q: %v", a.Selector, err)
 	}
-	return w.clickElement(el)
+	return p.clickElement(el)
 }
 
 // DoClick 在网持有的页面上以 CSS 选择器点击
-func (w *Web) DoClick(ctx context.Context, a *action.Click) error {
-	return w.timeoutWrapper(ctx, a, w.doClick)
+func (p *Page) DoClick(ctx context.Context, a *action.Click) error {
+	return p.timeoutWrapper(ctx, a, p.doClick)
 }
 
-func (w *Web) doClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
-	page := w.page.Context(ctx)
+func (p *Page) doClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
+	page := p.page.Context(ctx)
 	var err error
 	backendDOMNodeID := a.BackendDOMNodeID
 	if backendDOMNodeID == 0 {
@@ -75,11 +75,11 @@ func (w *Web) doClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
 	if err != nil {
 		return fmt.Errorf("解析节点 %d 失败: %v", backendDOMNodeID, err)
 	}
-	return w.clickElement(el)
+	return p.clickElement(el)
 }
 
 // DoClickByAX 在网持有的页面上通过可访问性语义（role/name）或后端 DOM 节点 ID 精准点击，
 // 避免同名元素/选择器歧义
-func (w *Web) DoClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
-	return w.timeoutWrapper(ctx, a, w.doClickByAX)
+func (p *Page) DoClickByAX(ctx context.Context, a *action.ClickByAXTree) error {
+	return p.timeoutWrapper(ctx, a, p.doClickByAX)
 }

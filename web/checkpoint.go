@@ -37,18 +37,18 @@ type Checkpoint struct {
 
 // CaptureCheckpoint 从网所持页面捕获当前可恢复状态（URL + cookies）。
 // 供会话管理器在"热→冷"提交时调用；cookie 读取失败时降级为仅保留 URL。
-func (w *Web) CaptureCheckpoint(ctx context.Context) (*Checkpoint, error) {
-	if w == nil || w.page == nil {
+func (p *Page) CaptureCheckpoint(ctx context.Context) (*Checkpoint, error) {
+	if p == nil || p.page == nil {
 		return nil, fmt.Errorf("web: 无可捕获状态的页")
 	}
-	info, err := w.page.Info()
+	info, err := p.page.Info()
 	if err != nil {
 		// 页面已失效：返回空检查点并上报，由调用方决定是否放弃冷态。
 		return &Checkpoint{}, err
 	}
 	cp := &Checkpoint{URL: info.URL}
 
-	cookies, err := w.page.Cookies(nil)
+	cookies, err := p.page.Cookies(nil)
 	if err != nil {
 		return cp, nil // cookie 读取失败降级：仍保留 URL
 	}
@@ -69,8 +69,8 @@ func (w *Web) CaptureCheckpoint(ctx context.Context) (*Checkpoint, error) {
 
 // RestoreCheckpoint 在一片（重新物化得到的）新页上重放检查点：先种 cookies，
 // 再导航到目标 URL，可选执行 ResumeJS。用于会话从冷态重新物化(hydrate)。
-func (w *Web) RestoreCheckpoint(ctx context.Context, cp *Checkpoint) error {
-	if w == nil || w.page == nil {
+func (p *Page) RestoreCheckpoint(ctx context.Context, cp *Checkpoint) error {
+	if p == nil || p.page == nil {
 		return fmt.Errorf("web: 无可重放的页")
 	}
 	if cp == nil {
@@ -91,19 +91,19 @@ func (w *Web) RestoreCheckpoint(ctx context.Context, cp *Checkpoint) error {
 				Expires:  proto.TimeSinceEpoch(c.Expires),
 			})
 		}
-		if err := w.page.SetCookies(params); err != nil {
+		if err := p.page.SetCookies(params); err != nil {
 			return fmt.Errorf("web: 重放 cookie 失败: %w", err)
 		}
 	}
 
 	if cp.URL != "" {
-		if err := w.Navigate(ctx, &action.Navigate{URL: cp.URL}); err != nil {
+		if err := p.Navigate(ctx, &action.Navigate{URL: cp.URL}); err != nil {
 			return fmt.Errorf("web: 重放导航失败: %w", err)
 		}
 	}
 
 	if cp.ResumeJS != "" {
-		if _, err := w.DoJavaScript(ctx, &action.JavaScript{JS: cp.ResumeJS}); err != nil {
+		if _, err := p.DoJavaScript(ctx, &action.JavaScript{JS: cp.ResumeJS}); err != nil {
 			return fmt.Errorf("web: 重放恢复脚本失败: %w", err)
 		}
 	}

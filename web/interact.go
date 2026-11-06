@@ -38,7 +38,7 @@ type Interactives struct {
 }
 
 // GetInteractives 遍历可访问性树，采集链接、按钮与文本输入框
-func (w *Web) GetInteractives(ctx context.Context) (string, error) {
+func (w *Page) GetInteractives(ctx context.Context) (string, error) {
 	p := w.page.Context(ctx)
 	result, err := getFullAXTree(p)
 	if err != nil {

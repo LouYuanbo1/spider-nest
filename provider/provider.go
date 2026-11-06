@@ -31,11 +31,12 @@ type AcquireOptions struct {
 // WebHandle 借租的结果：把"跨链路可寻址的令牌"与"本进程内的具体页"绑定。
 //
 //	Token   可寻址令牌：跨 RPC 交给云端编排器/远端节点；
-//	Web     本进程内的页：仅"本地/节点内后端"非空，远端后端恒为 nil；
+//	Web     可执行动作的活页门面（web.Web 契约）：本地后端为真实 *web.Page；
+//	        远端后端为 RPC 代理（实现同一契约），会话侧因此几乎零差异；
 //	Release 归还闭包：把网还回所属浏览器、再把浏览器还回池；幂等，可安全重复调用。
 type WebHandle struct {
 	Token   string
-	Web     *web.Web
+	Web     web.Web
 	Release func() error
 }
 
@@ -59,7 +60,7 @@ var (
 
 // WebProvider 是"会话底层资源"的来源契约。
 //
-// 设计注记：返回 WebHandle 而非裸 *web.Web，正是为了"编排层与底层资源来源彻底解耦"——
+// 设计注记：返回 WebHandle 而非裸 *web.Page，正是为了"编排层与底层资源来源彻底解耦"——
 // 编排器眼里只有各节点剩余容量（Stats），实现层眼里只有本地蜘蛛/浏览器。本地 Nest、
 // 单个 Spider、云端远端后端只需各自实现本接口，即可透明切换，会话管理器的其余逻辑零改动。
 type WebProvider interface {

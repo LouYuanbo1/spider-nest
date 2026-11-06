@@ -65,7 +65,7 @@ func (p *NestProvider[T, S]) Stats() PoolState {
 
 // lease 把"蜘蛛+网"装配成 WebHandle：成功封装即计 busy；Release 先把网还到所属浏览器、
 // 再浏览器还回池，任一失效按各层语义销毁重建。Release 幂等。
-func (p *NestProvider[T, S]) lease(sp S, w *web.Web) *WebHandle {
+func (p *NestProvider[T, S]) lease(sp S, w *web.Page) *WebHandle {
 	p.busy.Add(1)
 	var once sync.Once
 	var releaseErr error

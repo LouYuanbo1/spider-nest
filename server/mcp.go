@@ -178,142 +178,69 @@ func (tr *toolRegistry) listWebs(_ context.Context, _ action.ListWebs) (action.A
 	return action.ActionResult{Action: "list_webs", Effective: true, Value: "已借出的 web_id: " + strings.Join(ids, ", ")}, nil
 }
 
-// ---- 浏览器工具（先按 web_id 解析网，再以纯动作执行） ----
-
-// navigate 导航到指定 URL 并等待页面加载完成。
-func (tr *toolRegistry) navigate(ctx context.Context, in action.NavigateRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
+// act 是"先把 web_id 解析成一张活页，再在活页上经统一入口 RunAction 派发单个动作"的总入口。
+// 无论本地 *web.Page 还是云端的 RPC 代理，动作都收敛到 action.Action 一条路径，
+// 使上层协议面保持单一切缝——契约 web.Web 只需实现 RunAction/检查点几招即可。
+func (tr *toolRegistry) act(ctx context.Context, webID string, a action.Action) (action.ActionResult, error) {
+	w, err := tr.m.Resolve(ctx, webID)
 	if err != nil {
 		return action.ActionResult{}, err
 	}
+	return w.RunAction(ctx, a)
+}
+
+// ---- 浏览器工具（先按 web_id 解析网，再把纯动作交给统一入口 act 执行） ----
+
+// navigate 导航到指定 URL 并等待页面加载完成。
+func (tr *toolRegistry) navigate(ctx context.Context, in action.NavigateRequest) (action.ActionResult, error) {
 	cleanURL := strings.TrimSpace(in.URL)
 	// 移除首尾的反引号（解决 LLM 流式输出时带 Markdown 反引号的问题），再 Trim 一次消除残留空格
 	cleanURL = strings.TrimLeft(strings.TrimRight(cleanURL, "`"), "`")
 	cleanURL = strings.TrimSpace(cleanURL)
-
-	if err := w.Navigate(ctx, &action.Navigate{URL: cleanURL}); err != nil {
-		return action.ActionResult{}, err
-	}
-	// 导航后到达新页面，视为内容已变化；仅返回轻量确认，需内容时由 LLM 调用 get_content_tool
-	return w.ActionResult(ctx, "navigate", "", "", true), nil
+	return tr.act(ctx, in.WebID, &action.Navigate{URL: cleanURL})
 }
 
 // click 通过 CSS / XPath 选择器点击页面元素。
 func (tr *toolRegistry) click(ctx context.Context, in action.ClickRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	if err := w.DoClick(ctx, &in.Click); err != nil {
-		return action.ActionResult{}, err
-	}
-	return w.ActionResult(ctx, "click", "", "", true), nil
+	return tr.act(ctx, in.WebID, &action.Click{Type: in.Type, Selector: in.Selector})
 }
 
 // clickByAX 通过 get_interactives_tool 返回的 node_id 精准点击可交互元素。
 func (tr *toolRegistry) clickByAX(ctx context.Context, in action.ClickByAXRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	if err := w.DoClickByAX(ctx, &in.ClickByAXTree); err != nil {
-		return action.ActionResult{}, err
-	}
-	return w.ActionResult(ctx, "click_by_ax", "", "", true), nil
+	return tr.act(ctx, in.WebID, &action.ClickByAXTree{AXTreeNode: in.AXTreeNode})
 }
 
 // input 通过 CSS / XPath 选择器向输入框键入文本，clear 决定是否先清空。
 func (tr *toolRegistry) input(ctx context.Context, in action.InputRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	effective, err := w.DoInput(ctx, &in.Input)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	return w.ActionResult(ctx, "input", "", "", effective), nil
+	return tr.act(ctx, in.WebID, &action.Input{Type: in.Type, Selector: in.Selector, Text: in.Text, Clear: in.Clear})
 }
 
 // inputByAX 通过 node_id（或 role/name+nth）定位输入框并键入文本。
 func (tr *toolRegistry) inputByAX(ctx context.Context, in action.InputByAXRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	effective, err := w.DoInputByAX(ctx, &in.InputByAXTree)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	return w.ActionResult(ctx, "input_by_ax", "", "", effective), nil
+	return tr.act(ctx, in.WebID, &action.InputByAXTree{AXTreeNode: in.AXTreeNode, Text: in.Text, Clear: in.Clear})
 }
 
 // scroll 按指定像素数滚动当前页面。
 func (tr *toolRegistry) scroll(ctx context.Context, in action.ScrollRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	if err := w.DoScroll(ctx, &in.Scroll); err != nil {
-		return action.ActionResult{}, err
-	}
-	return w.ActionResult(ctx, "scroll", "", "", true), nil
+	return tr.act(ctx, in.WebID, &action.Scroll{ScrollY: in.ScrollY})
 }
 
 // execJavaScript 执行 JavaScript 代码并返回执行结果。
 func (tr *toolRegistry) execJavaScript(ctx context.Context, in action.JavaScriptRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	value, err := w.DoJavaScript(ctx, &in.JavaScript)
-	if err != nil {
-		return action.ActionResult{}, fmt.Errorf("javascript 执行失败: %w", err)
-	}
-	effective := value != "" && value != "undefined"
-	return w.ActionResult(ctx, "javascript", value, "", effective), nil
+	return tr.act(ctx, in.WebID, &action.JavaScript{JS: in.JS, Args: in.Args})
 }
 
 // getContent 按指定模式取回页面内容：ax（默认）/ structured / full。
 func (tr *toolRegistry) getContent(ctx context.Context, in action.GetContentRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	mode := action.DefaultContentMode(in.Mode)
-	var value string
-	switch mode {
-	case action.ContentModeStructured:
-		value, err = w.GetStructured(ctx)
-	case action.ContentModeFull:
-		value, err = w.GetHTML(ctx)
-	case action.ContentModeAX:
-		value, err = w.GetAXContent(ctx)
-	default:
-		return action.ActionResult{}, fmt.Errorf("未知的 mode=%q,可选:ax|structured|full", mode)
-	}
-	effective := err == nil
-	return w.ActionResult(ctx, "get_content", value, "", effective), nil
+	return tr.act(ctx, in.WebID, &action.GetContent{Mode: in.Mode})
 }
 
 // getInteractives 取回页面所有可交互元素（链接/按钮/输入框）及其 node_id。
 func (tr *toolRegistry) getInteractives(ctx context.Context, in action.GetInteractiveRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	interactives, err := w.GetInteractives(ctx)
-	effective := err == nil
-	return w.ActionResult(ctx, "get_interactives", interactives, "", effective), nil
+	return tr.act(ctx, in.WebID, &action.GetInteractive{})
 }
 
 // getPDF 把当前页面导出为 PDF，产物路径写入 ArtifactPath。
 func (tr *toolRegistry) getPDF(ctx context.Context, in action.GetPDFRequest) (action.ActionResult, error) {
-	w, err := tr.m.Resolve(ctx, in.WebID)
-	if err != nil {
-		return action.ActionResult{}, err
-	}
-	artifactPath, err := w.GetPDF(ctx, &in.GetPDF)
-	effective := err == nil
-	return w.ActionResult(ctx, "get_pdf", "", artifactPath, effective), nil
+	return tr.act(ctx, in.WebID, &action.GetPDF{PagePrintToPDF: in.PagePrintToPDF, Artifact: in.Artifact})
 }

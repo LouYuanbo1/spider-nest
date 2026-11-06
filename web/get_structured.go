@@ -201,7 +201,7 @@ func prune(n *html.Node) bool {
 // 先对整页做内容级剪枝（去 Chrome/空壳，见 prune），再用 html-to-markdown(v2) 转换为
 // Markdown（表格/任务列表/删除线用 GFM 扩展）。相比原始 HTML 更省 token、对 LLM 更友好，
 // 同时保留标题、列表、表格、链接等结构。
-func (w *Web) getStructured(ctx context.Context, _ *action.GetStructured) (string, error) {
+func (w *Page) getStructured(ctx context.Context, _ *action.GetStructured) (string, error) {
 	p := w.page.Context(ctx)
 	raw, err := p.HTML()
 	if err != nil {
@@ -240,6 +240,6 @@ func (w *Web) getStructured(ctx context.Context, _ *action.GetStructured) (strin
 	return strings.TrimSpace(mdText), nil
 }
 
-func (w *Web) GetStructured(ctx context.Context) (string, error) {
-	return w.timeoutResultWrapper(ctx, &action.GetStructured{}, w.getStructured)
+func (p *Page) GetStructured(ctx context.Context) (string, error) {
+	return p.timeoutResultWrapper(ctx, &action.GetStructured{}, p.getStructured)
 }

@@ -100,7 +100,7 @@ func WithWarmup(fn PreheatFunc) PortiaOption {
 // 让该站点反爬 JS 种下指纹/会话 Cookie。可用作 WithWarmup 的参数。
 func PreheatNavigate(u string) PreheatFunc {
 	return func(ctx context.Context, base Spider) error {
-		return base.BorrowWeb(func(w *web.Web) error {
+		return base.BorrowWeb(func(w *web.Page) error {
 			return w.Navigate(ctx, &action.Navigate{URL: u})
 		})
 	}
@@ -345,7 +345,7 @@ func (p *Portia) capture(ctx context.Context, t Target) (*hijack.RequestCapture,
 		// 借一张网，用"真实导航"到目标 URL 来偷头：导航不受 CORS/JS Promise 限制，
 		// 是必然发出的网络请求，hijack 一定能在请求 pause 时捕获请求头——把原先"跨域
 		// fetch + 未 await Promise"导致的超时（返回 undefined）整个绕开。
-		return sp.BorrowWeb(func(w *web.Web) error {
+		return sp.BorrowWeb(func(w *web.Page) error {
 			p.log().Info("借网成功，在页面上发起真实导航以偷头", "url", t.URL)
 			if err := w.Navigate(ctx, &action.Navigate{URL: t.URL}); err != nil {
 				p.log().Warn("偷头导航失败", "err", err, "url", t.URL)
