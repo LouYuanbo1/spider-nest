@@ -9,6 +9,10 @@
 // 传输选择：Go 标准库 net/rpc + gob。动作（[]action.Action）与检查点（*web.Checkpoint）
 // 本就是可序列化值；gob 对"接口槽位"（如 []action.Action）要求把具体类型注册进来，
 // 故在 init() 里对全部密封动作逐一 gob.Register。
+//
+// 边界声明：本项目刻意不引入 gRPC / 独立控制面（避免重依赖负担）。若上生产需要
+// 跨语言 / 流式 / TLS / 鉴权等传输能力，请在本层契约基础上做 gRPC 版本，改口仅限
+// cloud/agent（服务端）与 cloud/client（客户端）两个包，上层的编排逻辑不受影响。
 package proto
 
 import (
