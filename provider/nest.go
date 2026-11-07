@@ -2,10 +2,7 @@ package provider
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,11 +20,11 @@ var _ WebProvider = (*NestProvider[spider.Weaver, *spider.Weaver])(nil)
 // "约定 + 引用实现"，与"单个蜘蛛后端"等其它实现相平行，均由上层会话管理器消费。
 
 // NestProvider 把（Orchard 果园：蜘蛛池）适配成 WebProvider：
-// 编排层只见统一的"借还租约+容量快照"，不关心里头是一窝蜘蛛。
+// 编排层只见统一的"借还租约"，不关心里头是一窝蜘蛛。
 type NestProvider[T any, S nest.NestSpider[T]] struct {
 	picker   nest.IdlePicker[T, S] // 余量感知巢：AcquireIf 原子挑蛛
 	busy     atomic.Int64          // 当前成功借出、未归还的租约数
-	draining atomic.Bool           // 排空中：拒绝新租约（Stats.Ready=false）
+	draining atomic.Bool           // 排空中：拒绝新租约
 }
 
 // NewNestProvider 用一座 Orchard 果园构造基于 Nest 的 WebProvider 实现。
@@ -50,19 +47,6 @@ func NewNestFromConfig[T any, S nest.NestSpider[T]](
 	return NewNestProvider(o), nil
 }
 
-// Stats 返回 Nest 层级池占用快照：Capacity=巢内蜘蛛数，InUse=成功借出未归还数。
-func (p *NestProvider[T, S]) Stats() PoolState {
-	busy := p.busy.Load()
-	capacity := int64(p.picker.Size())
-	avail := max(capacity-busy, 0)
-	return PoolState{
-		Capacity:  int(capacity),
-		InUse:     int(busy),
-		Available: int(avail),
-		Ready:     !p.draining.Load(),
-	}
-}
-
 // lease 把"蜘蛛+网"装配成 WebHandle：成功封装即计 busy；Release 先把网还到所属浏览器、
 // 再浏览器还回池，任一失效按各层语义销毁重建。Release 幂等。
 func (p *NestProvider[T, S]) lease(sp S, w *web.Page) *WebHandle {
@@ -79,12 +63,12 @@ func (p *NestProvider[T, S]) lease(sp S, w *web.Page) *WebHandle {
 		})
 		return releaseErr
 	}
-	return &WebHandle{Token: newToken(), Web: w, Release: release}
+	return &WebHandle{Web: w, Release: release}
 }
 
 // AcquireWeb 借一只"还有余量"的蜘蛛并从中借一张网，返回 WebHandle。
 // 排空中直接返回 ErrUnavailable；池满时 AcquireIf 按 ctx 阻塞/取消。
-func (p *NestProvider[T, S]) AcquireWeb(ctx context.Context, opts AcquireOptions) (*WebHandle, error) {
+func (p *NestProvider[T, S]) AcquireWeb(ctx context.Context) (*WebHandle, error) {
 	if p.draining.Load() {
 		return nil, ErrUnavailable
 	}
@@ -107,12 +91,6 @@ func (p *NestProvider[T, S]) AcquireWeb(ctx context.Context, opts AcquireOptions
 	return p.lease(sp, w), nil
 }
 
-// Heartbeat 本地后端在进程内天然保活令牌，无远程析构，故为空操作。
-// 远端后端应在此续期，防止长任务持有的令牌被节点回收。
-func (p *NestProvider[T, S]) Heartbeat(ctx context.Context, token string) error {
-	return nil
-}
-
 // Drain 置排空位并等待在途租约全部归还，直到 ctx 到期。
 func (p *NestProvider[T, S]) Drain(ctx context.Context) error {
 	p.draining.Store(true)
@@ -132,18 +110,4 @@ func (p *NestProvider[T, S]) Drain(ctx context.Context) error {
 func (p *NestProvider[T, S]) Close() error {
 	p.draining.Store(true)
 	return p.picker.Close()
-}
-
-// tokenCounter 是 newToken 在随机源不可用时的兜底序列。仅用于保证令牌唯一性，
-// 不承载安全语义；正常情况下走 crypto/rand 生成 128 位随机令牌。
-var tokenCounter atomic.Uint64
-
-// newToken 生成一个够用且必成功的进程内令牌：优先 crypto/rand（128 位），
-// 异常时回退到"时间戳+计数器"兜底，避免借租路径上因随机源异常而失败。
-func newToken() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err == nil {
-		return hex.EncodeToString(raw[:])
-	}
-	return fmt.Sprintf("tok-%d-%d", time.Now().UnixNano(), tokenCounter.Add(1))
 }

@@ -11,8 +11,8 @@ import (
 
 // NewHTTPHandler 以"显式状态句柄"模式把 MCP 服务器经 HTTP（Streamable 传输）暴露为标准 http.Handler：
 // 客户端先调 open_web_tool 借一张网拿 web_id，再用同一 web_id 做后续浏览器操作，结束调
-// close_web_tool 归还。传输层保持无状态（Stateless），状态只收敛在 session.Manager 的句柄表里，
-// 因而天然可水平扩展——请求落到任意实例，只要 web_id 解析得到。
+// close_web_tool 归还。传输层无状态（Stateless），状态只收敛在 session.Manager 的句柄表里，
+// 客户端只凭 web_id 即可路由到对应活页。
 //
 // implementation / opts 与 NewMCPServer 含义一致；返回的 handler 可直接挂到既有路由器下，
 // 或交由 http.ListenAndServe / RunHTTPServer 托管。
