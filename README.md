@@ -1,28 +1,50 @@
 # [spider-nest](https://github.com/LouYuanbo1/spider-nest)
 
-> 声明式并发网页抓取库，内含 LLM（大模型）驱动的智能浏览器自动化，并支持本地与云端两种部署形态。
+> 面向个人的本地 **LLM 驱动浏览器自动化** 库，内含真实网页抓取能力，并可作为 **MCP（Model Context Protocol）** 服务器被任意智能体（Agent）调用。单进程即可跑通，覆盖从"操作真实浏览器"到"以 MCP 协议对外暴露"的全链路。
 
-`spider-nest` 把「浏览器进程 / 页面 / 抓取任务」抽象成 **巢（Nest）→ 蜘蛛（Spider）→ 网（Web）** 三层资源池，
-其上再叠加一条"冷热两态会话 + 可寻址活页指针"的编排链，最终以 **MCP（Model Context Protocol）** 暴露给智能体：
+## 它是什么
 
-- **本地形态（Route A）**：一个进程内用多浏览器池兜底，会话管理器把空闲浏览器自动"冷提交"成检查点、用到时再"重水化"，从而在 LLM 思考期间不占浏览器、抬高并发密度；
-- **云端形态（Route B）**：会话侧不做任何浏览器进程，只持节点连接；动作经 `net/rpc + gob`"拍"到云端节点就地执行。
+`spider-nest` 把你的浏览器升级成一个**可编程、可被智能体驱动的执行环境**。它把"浏览器进程 / 页面 / 抓取任务"抽象成
+**巢（Nest）→ 蜘蛛（Spider）→ 网（Web）** 三层资源池，之上叠加一条"显式状态句柄"的会话簿记链，最终以标准 MCP
+（Streamable HTTP）暴露给上层模型与工具：
 
-无论哪种形态，底层都是 `DeepSeek + eino` 封装的**网页数据抓取智能体**：打开任意 URL、发现可点击元素、
-按 CSS / XPath / 可访问性节点精准点击与输入、滚动懒加载、执行 JS、三模式提取内容，一气呵成。
+- **本地单进程，浏览器常驻**：一个用户（对话）经 `open_web_tool` 借一张独立的网拿到 `web_id` 句柄，之后所有动作携带同一
+  `web_id` 路由到该网，动作即状态连续、多轮对话不断档，完成即归还。
+- **三层资源池**：底层是真实的 Chrome 进程（蜘蛛）+ 标签页（网），可按需惰性启动、复用实例、失效自动重建；单一蜘蛛到多浏览器并发池皆可。
+- **两种资源来源可透明切换**：`provider.NestProvider`（多浏览器池）与 `provider.SpiderProvider`（单蜘蛛）实现同一 `WebProvider`
+  契约，上层会话层零改动即可换底板——单浏览器最省、多池量供爬虫/并发抓取。
+- **MCP 即插即用**：`cmd/server` 一条命令把全部浏览器操作以 MCP(HTTP) 暴露，Claude、Trae 等支持 Streamable HTTP 的客户端可直接接入。
+
+## 它能做什么
+
+底层全程 `DeepSeek + eino` 封装的**网页数据抓取智能体**：打开任意 URL、发现可点击元素、按 CSS / XPath / 可访问性节点精准点击与输入、
+滚动懒加载、执行 JS、三模式提取内容（可访问性树 / 剪枝 DOM / 原始 HTML），还可把页面打印为 PDF，一气呵成。
+
+```text
+打开 URL → 定位元素 → 点击/输入 → 滚动/执行 JS → 三模式取数 → （可选）PDF
+```
+
+## 典型使用场景
+
+- **接给本机 Agent 操作真实页面**：尤其**复用你自己已登录的浏览器会话**去操作需要登录的网站（Cookie/登录态自动继承）。
+- **万能 MCP 浏览器工具**：以 `cmd/server` 起一个本机 MCP 服务器，为任意 MCP 客户端注入"打开 / 点击 / 输入 / 取数 / PDF"能力。
+- **爬虫 / 多任务并发**：依托多浏览器池（nest），同时开多个 Chrome 进程与页面并发抓取，每任务独立页面互不干扰。
+- **多轮自主任务**：`cmd/ai` 内嵌本地 MCP 服务 + `DeepSeek` 智能体 + 持久化记忆，终端里直接多轮对话让 Agent 代你上网办事。
 
 ---
 
 ## 目录
 
+- [它是什么](#它是什么)
+- [它能做什么](#它能做什么)
+- [典型使用场景](#典型使用场景)
 - [项目结构](#项目结构)
-- [架构：从资源池到可变 HTTP/MCP](#架构从资源池到可变-httpmcp)
+- [架构：从资源池到 MCP](#架构从资源池到-mcp)
 - [核心亮点](#核心亮点)
 - [快速开始](#快速开始)
 - [使用示例](#使用示例)
 - [动作（Action）类型详解](#动作action类型详解)
 - [配置说明](#配置说明)
-- [云端部署：现状与缺口](#云端部署route-b现状与缺口)
 - [注意事项 / 安全](#注意事项--安全)
 
 ---
@@ -46,9 +68,8 @@ spider-nest/
 │   └── result.go          # 结构化 ActionResult（协议响应侧）
 │
 ├── web/                   # 网：单张页面的封装与动作执行
-│   ├── web.go             # Web 契约(interface)：RunAction/RunActions/CaptureCheckpoint/RestoreCheckpoint
+│   ├── web.go             # Web 契约(interface)：RunAction/RunActions
 │   ├── page.go            # Page 结构体（Web 契约的本地实现）+ 导航、超时与人类化延迟
-│   ├── checkpoint.go      # Checkpoint/Cookie：可序列化的会话状态（冷提交/重水化）
 │   ├── click.go input.go  # CSS/XPath/AX 节点定位的点击与输入
 │   ├── scroll.go          # 分段式/带停顿的页面滚动
 │   ├── javascript.go      # 页面内执行任意 JS 并序列化返回值
@@ -74,22 +95,16 @@ spider-nest/
 │   └── orchard.go         # Orchard：余量感知果园（FIFO 空闲队列 + 按余量挑蜘蛛）
 │
 ├── provider/              # 会话底层资源"来源契约"（关键解耦层）
-│   ├── provider.go        # WebProvider 接口 + WebHandle（Token + Web + Release）、错误分类
-│   ├── nest.go            # NestProvider：把整座巢适配成 WebProvider（本地 Route A）
-│   ├── spider.go          # SpiderProvider：把单只蜘蛛的网池适配成 WebProvider
-│   └── remote.go          # RemoteProvider：云端编排后端，按节点余量挑节点借活页（Route B）
+│   ├── provider.go        # WebProvider 接口 + WebHandle（Web + Release）、错误分类
+│   ├── nest.go            # NestProvider：把整座巢适配成 WebProvider
+│   └── spider.go          # SpiderProvider：把单只蜘蛛的网池适配成 WebProvider
 │
-├── session/               # 会话核心：把一纸租约提升为"冷热两态"状态机
-│   └── session.go         # session.Manager：Open/Resolve(重水化)/Release、hotTTL 自动冷提交、保活(pinned)
+├── session/               # 会话核心：把一纸租约提升为"显式状态句柄"的簿记
+│   └── session.go         # session.Manager：Open/Resolve/Close/List、web_id 稳定身份
 │
 ├── server/                # MCP over HTTP
 │   ├── mcp.go             # NewMCPServer：浏览器操作工具 + 生命周期工具(open/close/list web)
-│   └── http.go            # NewHTTPHandler / RunHTTPServer / Listen（Streamable HTTP，无状态可横向扩展）
-│
-├── cloud/                 # Route B 云端节点
-│   ├── proto/             # proto.go：net/rpc+gob 线槽协议（动作/检查点注册、PoolStat 快照）
-│   ├── agent/             # agent.go：云端节点 RPC 执行器（借/跑/检查点/还/续期 + 失活回收）
-│   └── client/            # client.go：会话侧 Conn + RemotePage（把令牌包装成远端活页代理）
+│   └── http.go            # NewHTTPHandler / RunHTTPServer / Listen（Streamable HTTP，无状态）
 │
 ├── agent/                 # 智能体（LLM 驱动）
 │   ├── agent.go           # SpiderAgent：eino/adk 结构，RAG + MCP 客户端驱动真实浏览器
@@ -98,8 +113,7 @@ spider-nest/
 │
 ├── cmd/                   # 可执行入口
 │   ├── ai/                # 终端多轮对话 CLI：内嵌本地 MCP 服务 + 智能体 + 持久化记忆
-│   ├── server/            # 把 spider-nest 以 MCP(HTTP) 暴露：go run ./cmd/server [-agents 节点]
-│   ├── agent/             # 云端节点入口：go run ./cmd/agent -addr :9001（Route B 节点侧）
+│   ├── server/            # 把 spider-nest 以 MCP(HTTP) 暴露：go run ./cmd/server
 │   ├── portia/            # 聪明直连 demo：偷头 → 纯 HTTP 直连 + 失效回退
 │   ├── manual/            # 程序化捕获 / Hijack 手动演示
 │   └── parse/             # 声明式动作 demo：从 YAML（actions.yaml）解析动作序列并执行
@@ -126,9 +140,9 @@ Nest ──蜘蛛池──  spider_pool_limit 只蜘蛛，每只 = 一个独立 
 
 ---
 
-## 架构：从资源池到可变 HTTP/MCP
+## 架构：从资源池到 MCP
 
-资源池之上，`provider / session / server / cloud` 把"浏览器进程"进一步抽成两层职责，支撑本地与云端两种形态：
+资源池之上，`provider / session / server` 把"浏览器进程"抽成"来源契约 → 会话簿记 → 协议暴露"三层职责：
 
 ```
                       ┌─────────────────────────────────────────────────────┐
@@ -140,20 +154,19 @@ Nest ──蜘蛛池──  spider_pool_limit 只蜘蛛，每只 = 一个独立 
         └────────────────────────────────────────┬───────────────────────────┘
                                                  │ web_id 解析
         ┌────────────────────────────────────────┴───────────────────────────┐
-        │        session（冷热两态状态机）：热=活页，冷=检查点，空闲自动冷提交/重水化         │
+        │     session（簿记）：web_id 稳定身份 → 绑定具体活页                              │
         └────────────────────────────────────────┬───────────────────────────┘
                                                  │ WebProvider 契约
-    ┌──────────────────────────────┬──────────────────────────────┐
-    │ provider.NestProvider 本地多浏览器池 │  provider.SpiderProvider 单机蜘蛛  │  provider.RemoteProvider 云端编排 │
-    └───────────────┬──────────────┴──────────────┬──────────────┴───────────────┬──────────────┘
-                    │ Nest(Grove/Orchard)    蜘蛛(Weaver)            节点(cloud/agent, net/rpc)                     │
-                    │  → 蜘蛛(Weaver)          网(web.Page)          会话侧动作经 RPC 拍到节点就地执行               │
-                    │  → 网(web.Page)
+                      ┌──────────────────────────┴─────────────────────────┐
+                      │ provider.NestProvider 本地多浏览器池 │  provider.SpiderProvider 单机蜘蛛 │
+                      └───────────────┬──────────────┴──────────────┬────────┘
+                              Nest(Grove/Orchard)          蜘蛛(Weaver)
+                              → 蜘蛛(Weaver) → 网(web.Page)   → 网(web.Page)
 ```
 
-- `provider.WebProvider` 把"资源从哪来"与"资源怎么用"解耦：本地用 `NestProvider`/`SpiderProvider`，云端用 `RemoteProvider`，上层 `session` 只认该契约。
-- `session.Manager` 把借来的活页包装成带 `web_id` 的会话：活跃操作用热页，空闲超 `hotTTL` 自动冷提交（归还浏览器、保留检查点），再次用到按检查点重水化。
-- `server.NewMCPServer` 把浏览器操作注册成官方 `modelcontextprotocol/go-sdk` 工具，经 HTTP（Streamable、无状态）暴露，可水平扩展；任意客户端只凭 `web_id` 即可路由到对应活页。
+- `provider.WebProvider` 把"资源从哪来"与"资源怎么用"解耦：本地用 `NestProvider`（多浏览器池）或 `SpiderProvider`（单蜘蛛），上层 `session` 只认该契约。
+- `session.Manager` 把借来的租约提升为带 `web_id` 稳定身份的会话：Open 借一张网并分配 `web_id`，此后所有动作带同一 `web_id` 经 Resolve 解析到同一张活页（多轮对话状态连续），Close/Shutdown 归还。
+- `server.NewMCPServer` 把浏览器操作注册成官方 `modelcontextprotocol/go-sdk` 工具，经 HTTP（Streamable、无状态）暴露；客户端只凭 `web_id` 即可路由到对应活页。
 
 ---
 
@@ -162,8 +175,9 @@ Nest ──蜘蛛池──  spider_pool_limit 只蜘蛛，每只 = 一个独立 
 - **LLM 驱动智能体**：基于 `DeepSeek + eino/adk`，模型经 MCP 客户端自主决策调用浏览器工具，完成「导航 → 定位 → 交互 → 提取」多步流程，流式打字输出与思路回放。
 - **真实浏览器自动化**：基于 `go-rod`，非简单 HTTP 抓取，天然兼容 JS 动态渲染（SPA）、懒加载、需登录页面。
 - **三层资源池 + 懒加载 + 失效重建**：浏览器按需惰性启动；复用实例避免反复启停 Chrome；检测到页面/浏览器失效时自动销毁并补建，杜绝"借了不还"死锁（`Borrow`/`BorrowWeb` 保证归还）。
-- **可寻址活页指针（web_id）**：`provider.WebHandle` 携带跨 RPC 可寻址的令牌；会话不绑定具体进程内页面，只绑定"会话"，进程重启/滚动发布后仍能凭检查点重水化。
-- **冷热两态会话**：热=活页（零重建成本），冷=检查点（不占浏览器）。空闲热页自动冷提交，LLM 思考/idle 期间不占浏览器，从而抬高并发密度（体现在 `spider_pool_limit` 的意义上）。
+- **可寻址活页指针（web_id）**：每次 `open_web_tool` 借网都分配一个稳定的 `web_id` 句柄，其底层固定绑定某一具体活页；上层协议只跟 `web_id` 打交道，不绑定具体进程内对象，多轮对话据此持续命中同一张网。
+- **会话即借即还**：浏览器常驻，会话随 `open/close` 即借即还，一套网持有到底、用完归还，实现极简且浏览器资源零浪费。
+- **MCP 即插即用**：`server` 以标准 `modelcontextprotocol/go-sdk` 暴露浏览器操作工具与生命周期工具（`open_web_tool`/`close_web_tool`/`list_webs_tool`），任何支持 Streamable HTTP 的 MCP 客户端（含 Claude、字节 Trae、其它 Agent 框架）可直接接入。
 - **三种取数模式，token 级省显存**：
   - `ax`（默认，首选）：基于浏览器可访问性树输出紧凑 Markdown，天然剔除隐藏/装饰/脚本节点，还原标题/列表/表格与层级，可交互元素附 `node_id` 可直接点击/输入，最省 token；
   - `structured`：已剪枝 DOM 转可读 Markdown，保留粗体/行内代码等富文本内联格式；
@@ -171,8 +185,8 @@ Nest ──蜘蛛池──  spider_pool_limit 只蜘蛛，每只 = 一个独立 
 - **声明式动作（YAML/JSON）**：`action.ParseActions` 提供格式无关解析核心，内置 YAML / JSON 前端（`ParseYAML` / `ParseJSON`），把"步骤"写进配置即可交由爬虫/巢按序执行，也是智能体工具的同一套契约。
 - **人类化行为模拟**：逐字打字 + 随机停顿 + 偶发打错后退格、点击前 hover 停留、分段滚动穿插"阅读"停顿，降低反爬特征。
 - **执行可观测**：每步返回结构化 `ActionResult`（动作名 / 标题 / URL / 返回值 / 落盘产物路径 / 是否生效）。
-- **两种部署形态**：本地一条命令（`cmd/ai` / `cmd/server`）可跑通；云端拆成"会话侧调度（`provider.remote` + `cloud/client`）"与"节点侧执行（`cloud/agent`）"，支撑多节点水平扩展与故障隔离。
-- **健壮性设计**：单动作超时、工具调用超时后让模型反思重试、JS 偶发失败自动重试、远程租约心跳保活 + reaper 兜底回收、PDF 流式落盘 `O(1)` 内存。
+- **本地一条命令跑通**：`cmd/server` 一条命令把浏览器操作以 MCP(HTTP) 暴露给任意客户端；`cmd/ai` 则内嵌本地 MCP 服务 + 智能体 + 持久化记忆，直接终端多轮对话。
+- **健壮性设计**：单动作超时、工具调用超时后让模型反思重试、JS 偶发失败自动重试、PDF 流式落盘 `O(1)` 内存。
 - **会话持久化**：对话历史按会话 ID 追加写入 JSONL，重启后可回填上下文，多轮续聊不断档。
 
 ---
@@ -206,8 +220,6 @@ Nest ──蜘蛛池──  spider_pool_limit 只蜘蛛，每只 = 一个独立 
    go run ./cmd/portia      # 聪明直连：偷头 → 纯 HTTP 直连 + 失效回退
    go run ./cmd/manual      # 程序化捕获 / Hijack 手动演示
    go run ./cmd/server      # 把浏览器操作以 MCP(HTTP) 暴露，默认 :8080
-   go run ./cmd/server -agents "127.0.0.1:9001"   # Route B：把动作拍给云端节点执行
-   go run ./cmd/agent -addr :9001                 # 启动一台云端节点（路由 B 节点侧）
    ```
 
 4. **终端交互（`cmd/ai`）**
@@ -340,8 +352,8 @@ chatModel, _ := deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
 res, _ := provider.NewNestFromConfig(config.NestConfig{SpiderPoolLimit: 1},
     func() (*spider.Weaver, error) { return spider.NewWeaver(spider.WithConfig(cfg.Spider)) })
 
-// 2) 冷热两态会话管理器（Provider 之上）
-mgr, _ := session.New(res, cfg.Spider.OperationTimeout, 60*time.Second, 10*time.Minute)
+// 2) 会话管理器（Provider 之上）
+mgr, _ := session.New(res, cfg.Spider.OperationTimeout)
 defer mgr.Shutdown()
 
 // 3) 内嵌本地 MCP 服务（HTTP），智能体经它驱动浏览器
@@ -471,49 +483,7 @@ YAML / JSON 中 `type` 可选：`navigate` / `click` / `click_ax` / `input` / `i
 | `spider.trace` | 是否开启 CDP 通信追踪日志 | 调试用 |
 | `nest.spider_pool_limit` | 巢内可同时活动的蜘蛛（浏览器）数，即最大并发浏览器数 | `1` |
 | `model.api_key` | DeepSeek API Key | 推荐用 `AI_SPIDER_API_KEY` 环境变量 |
-| `mcp.base_url` | agent 侧工具调用所连接的远端 MCP HTTP 端点 | 如 `http://127.0.0.1:8080/mcp` |
-
----
-
-## 云端部署（Route B）：现状与缺口
-
-> **决策**：本项目**刻意不内置** gRPC 编排控制面，以免给项目带来过重的依赖负担。Route B 目前是
-> "本仓库自足的最小云端形态"；要上生产规模化，请在**独立的新项目（外部控制面）**里补齐下面的缺口。
-
-### 现在已提供（按现有命令即可跑通的最小闭环）
-
-| 组件 | 位置 | 职责 |
-|------|------|------|
-| 云端节点 | `cloud/agent` | 一台节点进程 = 本地 Nest 池 + 薄 RPC 面；经 `net/rpc+gob` 暴露 借/跑/抓放检查点/还/续期/容量/取产物，并带租约失活 reaper 兜底回收 |
-| 会话侧调度口 | `provider/remote.go` | `RemoteProvider`：按各节点 `Stat` 余量挑节点借活页、后台心跳养在途租约、支持排空与优雅关停 |
-| 节点连接 / 活页代理 | `cloud/client` | `Conn` + `RemotePage`：把一纸令牌包装成 `web.Web` 的 RPC 代理，会话层几乎零差异 |
-| 线槽协议 | `cloud/proto` | 全部 RPC 载荷 + 动作/检查点的 gob 注册 + `PoolStat` 容量快照 |
-
-组合命令：
-
-```bash
-go run ./cmd/agent -addr :9001                         # 起一台云端节点
-go run ./cmd/server -agents "127.0.0.1:9001,10.0.0.5:9001"  # 会话侧把动作拍到节点上执行
-```
-
-（本地单进程形态 `go run ./cmd/server` 不传 `-agents`，即走 Route A 的 Nest 池。）
-
-### 刻意不内置的部分（这是有意的取舍）
-
-- **无 gRPC / 无独立控制面进程**：传输保持 `net/rpc+gob`（零新增重依赖）；"编排"仅收敛在
-  `provider.remote` 的 `pickNode` 那一段极薄的按余量挑节点逻辑里，内嵌在会话侧，不成独立服务。
-- 无服务发现 / 注册中心、无 TLS、无鉴权、无跨语言支持、无多租户隔离。
-
-### 云上生产部署需要你补什么（建议放独立新项目 / 外部设施）
-
-1. **注册与发现**：`RemoteProvider` 目前持静态节点地址列表；生产应换成从 Consul / etcd / K8s Endpoint
-   动态解析节点，让 `pickNode` 改为向注册中心查询即可（代码已预留该改口，见 `provider/remote.go` 注释）。
-2. **传输升级（如需跨语言 / 流式 / 治理）**：把 `cloud/proto` 的 `net/rpc+gob` 换为 gRPC。契约已按
-   方法 / 载荷隔离，改口集中在 `cloud/agent`（服务端）与 `cloud/client`（客户端）两个包，编排逻辑零改动。
-3. **安全加固**：`Node.*` 各 RPC 无鉴权、无 TLS；`FetchArtifact` 按路径直读节点文件，生产应改
-   对象存储 / 预签名短链，并在节点间叠加 mTLS 与鉴权。
-4. **弹性与治理**：把轮询式心跳升级为流式；补背压、deadline 透传、多租户配额与隔离，
-   并让滚动发布 / 缩容时的 `Drain` 钩子接入到编排平台。
+| `mcp.base_url` | agent 侧工具调用所连接的本机 MCP HTTP 端点 | 如 `http://127.0.0.1:8080/mcp` |
 
 ---
 

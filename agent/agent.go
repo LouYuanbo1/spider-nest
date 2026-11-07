@@ -18,8 +18,20 @@ import (
 type SpiderAgent struct {
 	Agent *adk.ChatModelAgent
 
+	// client 是底层 MCP 客户端；经回调远程持有 MCP 服务的会话管理器。为 nil 时无缝降级。
+	client *mcp.Client
+
 	// memory 持久化会话上下文；为 nil 时不保存记忆，退化为一次性执行。
 	memory *fs.Store[*schema.Message]
+}
+
+// CloseSession 结束一个会话：把该会话持有的浏览器网还给服务端。
+// 调用方应在"切换新会话/退出"这类会话生命周期边界处调用，由它决定 web 的归还时机。
+func (c *SpiderAgent) CloseSession(sessionID string) {
+	if c.client == nil {
+		return
+	}
+	c.client.CloseSession(context.Background(), sessionID)
 }
 
 // SetMemoryStore 开启持久化记忆并指定会话存储目录。
@@ -82,9 +94,11 @@ func NewDefaultSpiderAgent(ctx context.Context, model model.ToolCallingChatModel
 			- 向已有内容的输入框输入前，可设 clear=true 先清空再键入。
 
 			## JS使用准则（重要，务必遵守）
-			- **能用已有的专用工具（navigate/click/input/scroll/get_content）解决的问题，绝不使用 javascript_tool**，以减少出错几率。
-			- 向输入框键入文本一律用 input_by_ax_tool 或 input_tool，点击用 click_by_ax_tool 或 click_tool，滚动用 scroll_tool，提取内容用 get_content_tool。
-			- 仅当现有工具无法完成（如复杂数据处理、特定 DOM 操作、跨域拦截等）时才考虑 javascript_tool，并优先用 get_interactives/输入/点击工具组合替代。
+			- **javascript_tool 是被动选项，默认不启用**：不到万不得已，绝不调用；能用专用工具解决的问题，一律禁止使用 JS。
+			- **可用专用工具完成的一切操作都不得用 JS**：导航用 navigate_tool，点击用 click_by_ax_tool / click_tool，输入用 input_by_ax_tool / input_tool，滚动用 scroll_tool，取数用 get_content_tool。这些工具已覆盖 95% 以上场景，优先穷尽它们。
+			- **仅在现有工具确实无法完成、且无任何替代方案时才考虑 javascript_tool**（例如复杂的数据清洗、特殊的 DOM 处理、被现有工具拦截的跨域场景），并优先尝试用 get_interactives / 输入 / 点击工具组合来替代。
+			- 即使最终使用 JS，也保持**最小化**：只执行完成该步所必需的最短脚本，并在事后优先用 get_content_tool 获取结果，避免用 JS 做整页取数、整页抓取等本可用专用工具覆盖的操作。
+			- **核心心法**：JS 是最后手段，不是第一选择。遇到需求先问自己"是否有专用工具能完成"，回答"有"就绝不碰 JS。
 
 			## 操作工作流
 			典型的数据抓取流程：
@@ -144,7 +158,7 @@ func NewDefaultSpiderAgent(ctx context.Context, model model.ToolCallingChatModel
 	if err != nil {
 		return nil, fmt.Errorf("Error creating search agent: %w", err)
 	}
-	return &SpiderAgent{Agent: searchAgent}, nil
+	return &SpiderAgent{Agent: searchAgent, client: client}, nil
 }
 
 // newSpiderTools 集中注册 Spider 智能体所需的所有浏览器自动化工具。
@@ -203,8 +217,11 @@ func (c *SpiderAgent) OutputMessage(ctx context.Context, sessionID, input string
 	msgs = append(msgs, history...)
 	msgs = append(msgs, schema.UserMessage(input))
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: c.Agent, EnableStreaming: true})
-	iter := runner.Run(ctx, msgs, options...)
+	// 把会话 id 注入 ctx，令本轮工具调用（浏览器动作）按该会话路由到其对应的那张网。
+	runCtx := mcp.WithSessionID(ctx, sessionID)
+
+	runner := adk.NewRunner(runCtx, adk.RunnerConfig{Agent: c.Agent, EnableStreaming: true})
+	iter := runner.Run(runCtx, msgs, options...)
 
 	produced, err := stream(iter, streamFunc)
 

@@ -78,8 +78,6 @@ func main() {
 	mgr, err := session.New(
 		res,
 		appcfg.Spider.OperationTimeout,
-		60*time.Second, // hotTTL：热页空闲多久后冷提交
-		10*time.Minute, // idleTTL：冷态会话无使用多久后彻底回收
 	)
 	if err != nil {
 		fmt.Printf("Error creating session manager: %v", err)
@@ -111,6 +109,8 @@ func main() {
 
 	// 终端多轮对话模式：for 循环读取用户输入，逐轮调用 agent。
 	// 默认开启一个新会话，历史记忆自动持久化并回填。
+	// 每个会话持有自己的一张网；切到新会话 / 退出时调用 CloseSession 归还，由会话生命周期
+	// 决定 web 的归还时机，而不是交给模型显式 close（模型忘记归还会长期占着池资源）。
 	sessionID := newSessionID()
 	fmt.Printf("[已创建新会话 %s]\n", sessionID)
 	reader := bufio.NewReader(os.Stdin)
@@ -120,6 +120,7 @@ func main() {
 		if err != nil {
 			// EOF (Ctrl+D / Ctrl+Z) 也视为退出
 			fmt.Println("\n[输入结束，退出]")
+			modelAgent.CloseSession(sessionID)
 			break
 		}
 
@@ -130,9 +131,11 @@ func main() {
 		switch strings.ToLower(input) {
 		case "exit", "quit", "q":
 			fmt.Println("[退出]")
+			modelAgent.CloseSession(sessionID)
 			return
 		case "n", "new":
-			// 新建一个按时间排序的随机会话 id，切换到全新上下文
+			// 结束旧会话（归还其浏览器网），切换到全新上下文
+			modelAgent.CloseSession(sessionID)
 			sessionID = newSessionID()
 			fmt.Printf("\n[已新建会话 %s]\n", sessionID)
 			continue

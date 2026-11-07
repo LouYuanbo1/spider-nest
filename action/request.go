@@ -93,6 +93,3 @@ type OpenWeb struct{}
 type CloseWeb struct {
 	WebID string `json:"web_id" jsonschema:"要归还的浏览会话句柄,由 open_web_tool 返回"`
 }
-
-// ListWebs 列出当前所有仍被占用（未归还）的 web_id 句柄，便于模型管理自己打开的资源。
-type ListWebs struct{}

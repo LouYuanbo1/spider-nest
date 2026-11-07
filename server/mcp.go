@@ -28,7 +28,7 @@ type toolRegistry struct {
 }
 
 // NewMCPServer 用"显式状态句柄"模式创建 MCP 服务器（统一入口）：
-// 浏览器工具统一要求携带 web_id，另注册 open_web_tool / close_web_tool / list_webs_tool
+// 浏览器工具统一要求携带 web_id，另注册 open_web_tool / close_web_tool
 // 生命周期工具供模型借还网。底层网来自 session.Manager，一个用户独占一张网。
 func NewMCPServer(m *session.Manager, implementation *mcp.Implementation, opts *mcp.ServerOptions) *mcp.Server {
 	tr := &toolRegistry{m: m}
@@ -101,7 +101,7 @@ func buildServer(tr *toolRegistry, implementation *mcp.Implementation, opts *mcp
 	return srv
 }
 
-// registerLifecycleTools 注册"借/还/列"生命周期工具。统一句柄模式下始终注册。
+// registerLifecycleTools 注册"借/还"生命周期工具。统一句柄模式下始终注册。
 func registerLifecycleTools(srv *mcp.Server, tr *toolRegistry) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "open_web_tool",
@@ -111,15 +111,9 @@ func registerLifecycleTools(srv *mcp.Server, tr *toolRegistry) {
 	}, tr.wrapTool("open_web_tool", tr.openWeb))
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name: "close_web_tool",
-		Description: "Return the web_id's web page back to the idle pool. Call this when the conversation/task is finished to release the resource. " +
-			"Idle webs are also recycled automatically after a timeout; always prefer an explicit close.",
+		Name:        "close_web_tool",
+		Description: "Return the web_id's web page back to the pool. Call this when the conversation/task is finished to release the resource. Always prefer an explicit close; an unreleased web stays held until the server shuts down.",
 	}, tr.wrapTool("close_web_tool", tr.closeWeb))
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_webs_tool",
-		Description: "List all currently-held (not yet returned) web_id handles, so you can keep track of the resources you have opened.",
-	}, tr.wrapTool("list_webs_tool", tr.listWebs))
 }
 
 // wrapTool 把执行函数包装成官方 HandlerFor 风格的处理器，并统一处理：
@@ -169,18 +163,9 @@ func (tr *toolRegistry) closeWeb(_ context.Context, in action.CloseWeb) (action.
 	return action.ActionResult{Action: "close_web", Effective: true, Value: "已归还 web_id=" + in.WebID}, nil
 }
 
-// listWebs 列出现有仍被占用（未归还）的 web_id。
-func (tr *toolRegistry) listWebs(_ context.Context, _ action.ListWebs) (action.ActionResult, error) {
-	ids := tr.m.List()
-	if len(ids) == 0 {
-		return action.ActionResult{Action: "list_webs", Effective: true, Value: "当前没有已借出的网(web_id)"}, nil
-	}
-	return action.ActionResult{Action: "list_webs", Effective: true, Value: "已借出的 web_id: " + strings.Join(ids, ", ")}, nil
-}
-
 // act 是"先把 web_id 解析成一张活页，再在活页上经统一入口 RunAction 派发单个动作"的总入口。
-// 无论本地 *web.Page 还是云端的 RPC 代理，动作都收敛到 action.Action 一条路径，
-// 使上层协议面保持单一切缝——契约 web.Web 只需实现 RunAction/检查点几招即可。
+// 无论本地 *web.Page 还是其它实现，动作都收敛到 action.Action 一条路径，
+// 使上层协议面保持单一切缝——契约 web.Web 只需实现 RunAction/RunActions 几招即可。
 func (tr *toolRegistry) act(ctx context.Context, webID string, a action.Action) (action.ActionResult, error) {
 	w, err := tr.m.Resolve(ctx, webID)
 	if err != nil {
