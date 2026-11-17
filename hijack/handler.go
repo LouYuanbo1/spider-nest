@@ -1,7 +1,7 @@
 package hijack
 
 import (
-	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -29,17 +29,22 @@ type HijackRule struct {
 //  1. 方法不命中时放行到真实网络（避免误伤同 URL 的其他方法）；
 //  2. panic 兜底放行——浏览器级拦截若不放行会把整池页面的请求都挂起，
 //     进而卡死 Spider 的网池。
+//
+// logger 为 nil 时在创建闭包前兜底为 slog.Default()（幂等，支持本函数被独立调用；
+// 主路径 EnableRouter 已兜底）。闭包内与 defer 中不再做 nil 判断，避免在并发
+// 触发的 panic 路径上写共享捕获变量而引入数据竞争。
 func HijackWrapper(rule HijackRule, logger *slog.Logger) func(*rod.Hijack) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(h *rod.Hijack) {
 		defer func() {
 			if r := recover(); r != nil {
-				if logger != nil {
-					logger.Info("hijack handler 出错，已放行",
-						slog.String("method", rule.Method),
-						slog.String("pattern", rule.Pattern),
-						slog.Any("error", r),
-					)
-				}
+				logger.Info("hijack handler 出错，已放行",
+					slog.String("method", rule.Method),
+					slog.String("pattern", rule.Pattern),
+					slog.Any("error", r),
+				)
 				h.ContinueRequest(&proto.FetchContinueRequest{})
 			}
 		}()
@@ -48,26 +53,6 @@ func HijackWrapper(rule HijackRule, logger *slog.Logger) func(*rod.Hijack) {
 			return
 		}
 		rule.Handler(h)
-	}
-}
-
-// MonitorHandler 返回一个"真实监听"处理函数：读取命中请求的方法/URL/请求头/请求体，
-// 记录到 logger，然后调用 ContinueRequest 原样放行到真实网络，不改动页面行为。
-// 始终全量采集请求头与请求体（分别经 h.Request.Headers() / h.Request.Body()），
-// 无需开关——监听的意义就在于完整观测。
-func MonitorHandler(logger *slog.Logger) HijackHandler {
-	return func(h *rod.Hijack) {
-		if logger == nil {
-			logger = slog.Default()
-		}
-		logger.Info("请求被监听(真实放行)",
-			slog.String("method", h.Request.Method()),
-			slog.String("url", h.Request.URL().String()),
-			slog.Any("headers", h.Request.Headers()),
-			slog.String("body", h.Request.Body()),
-		)
-		// 真实监听：放行到真实网络，页面请求不被挂起。
-		h.ContinueRequest(&proto.FetchContinueRequest{})
 	}
 }
 
@@ -155,21 +140,45 @@ func RoundTripHandler(c *http.Client, fn func(*RoundTripCapture)) HijackHandler 
 	}
 }
 
-// EchoHandler 返回一个"回喂 echo"处理函数：把命中请求的方法/URL/query 序列化成 JSON 回喂给页面，
-// 不发真实网络请求。用于声明式演示假响应/拦截回喂场景。
-func EchoHandler() HijackHandler {
+// MonitorHandler 返回一个"真实监听"处理函数：读取命中请求的方法/URL/请求头/请求体，
+// 记录到 logger，然后调用 ContinueRequest 原样放行到真实网络，不改动页面行为。
+// 始终全量采集请求头与请求体（分别经 h.Request.Headers() / h.Request.Body()），
+// 无需开关——监听的意义就在于完整观测。
+func MonitorHandler(logger *slog.Logger) HijackHandler {
 	return func(h *rod.Hijack) {
-		payload, _ := json.Marshal(map[string]any{
-			"method": h.Request.Method(),
-			"url":    h.Request.URL().String(),
-			"query":  h.Request.URL().Query(),
-		})
-		// 回喂的假响应也要带 CORS 头：页面常以跨域 fetch 命中假 API（尤其 AI 爬虫
-		// 截获第三方接口），缺了这些头浏览器会预检拦截，页面拿不到回喂内容。
-		h.Response.SetHeader("Access-Control-Allow-Origin", "*")
-		h.Response.SetHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		h.Response.SetHeader("Access-Control-Allow-Headers", "*")
-		h.Response.SetHeader("Content-Type", "application/json")
-		h.Response.SetBody(payload)
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Info("请求被监听(真实放行)",
+			slog.String("method", h.Request.Method()),
+			slog.String("url", h.Request.URL().String()),
+			slog.Any("headers", h.Request.Headers()),
+			slog.String("body", h.Request.Body()),
+		)
+		// 真实监听：放行到真实网络，页面请求不被挂起。
+		h.ContinueRequest(&proto.FetchContinueRequest{})
 	}
+}
+
+type hijackable interface {
+	HijackRequests() *rod.HijackRouter
+}
+
+func EnableRouter[T hijackable](source T, rules []HijackRule, logger *slog.Logger) (*rod.HijackRouter, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	router := source.HijackRequests()
+	for _, r := range rules {
+		if r.Pattern == "" {
+			return nil, fmt.Errorf("hijack 规则无效：pattern 不能为空")
+		}
+		if r.Handler == nil {
+			r.Handler = func(*rod.Hijack) {} // 兜底：命中也不填内容，回喂空 200
+		}
+		if err := router.Add(r.Pattern, proto.NetworkResourceType(""), HijackWrapper(r, logger)); err != nil {
+			return nil, fmt.Errorf("注册 hijack 规则 %q(%s) 失败: %v", r.Pattern, r.Method, err)
+		}
+	}
+	return router, nil
 }

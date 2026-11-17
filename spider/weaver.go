@@ -12,10 +12,9 @@ import (
 
 	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/LouYuanbo1/spider-nest/config"
-	"github.com/LouYuanbo1/spider-nest/spider/hijack"
+	"github.com/LouYuanbo1/spider-nest/hijack"
 	"github.com/LouYuanbo1/spider-nest/web"
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-rod/stealth"
 )
 
@@ -339,24 +338,6 @@ func (s *Weaver) IsActive() bool {
 	return err == nil
 }
 
-// enableRouter 校验并装配一组规则到一把新建的独立 HijackRouter 上（Add 齐即返回，不 Run）。
-// 供 WithHijack 装配监听规则时使用；空规则不经此路径（见 WithHijack）。
-func (s *Weaver) enableRouter(rules []hijack.HijackRule) (*rod.HijackRouter, error) {
-	router := s.browser.HijackRequests()
-	for _, r := range rules {
-		if r.Pattern == "" {
-			return nil, fmt.Errorf("hijack 规则无效：pattern 不能为空")
-		}
-		if r.Handler == nil {
-			r.Handler = func(*rod.Hijack) {} // 兜底：命中也不填内容，回喂空 200
-		}
-		if err := router.Add(r.Pattern, proto.NetworkResourceType(""), hijack.HijackWrapper(r, s.logger)); err != nil {
-			return nil, fmt.Errorf("注册 hijack 规则 %q(%s) 失败: %v", r.Pattern, r.Method, err)
-		}
-	}
-	return router, nil
-}
-
 // WithHijack 为一次"借-用-还"在蜘蛛上挂起一套监听，fn 结束即自动撤除。
 // 回调 fn 在前、监听规则为可选变参（与 Nest.BorrowSpider 的 fn 在前约定对齐）：
 // 规则为空时 fn 原样执行（不启用 Fetch 域、不关缓存）。
@@ -367,7 +348,7 @@ func (s *Weaver) enableRouter(rules []hijack.HijackRule) (*rod.HijackRouter, err
 // 蜘蛛显式绑定：如 fn 里再 BorrowWeb/Crawl，读起来就是"在这只蜘蛛上监听并行事"。
 func (s *Weaver) WithHijack(fn func(Spider) error, rules ...hijack.HijackRule) error {
 	if len(rules) != 0 {
-		router, err := s.enableRouter(rules)
+		router, err := hijack.EnableRouter(s.browser, rules, s.logger)
 		if err != nil {
 			return err
 		}

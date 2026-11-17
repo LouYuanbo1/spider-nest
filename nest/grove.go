@@ -7,6 +7,7 @@ import (
 
 	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/LouYuanbo1/spider-nest/config"
+	"github.com/LouYuanbo1/spider-nest/hijack"
 	"github.com/LouYuanbo1/spider-nest/spider"
 )
 
@@ -153,47 +154,43 @@ func (n *Grove[T, S]) Close() error {
 // 监听配置，按需传（零个即不监听）。有监听时由 WithHijack 为本次"借-用-还"挂起
 // 一套独立的监听 goroutine，fn 执行完（含 panic）立即撤除，蜘蛛池里的实例因此
 // 永远以"干净、不带监听"的状态被复用，多只蜘蛛不会互相重复挂监听。
-func (n *Grove[T, S]) BorrowSpider(fn func(S) error, hijackCfgs ...config.HijackConfig) error {
+func (n *Grove[T, S]) BorrowSpider(fn func(S) error, hijackRules ...hijack.HijackRule) error {
 	s, err := n.Acquire()
 	if err != nil {
 		return err
 	}
 	defer n.Release(s)
 
-	rules, err := spider.RulesFromConfig(hijackCfgs, n.logger)
-	if err != nil {
-		return err
-	}
 	return s.WithHijack(
 		func(spider.Spider) error {
 			return fn(s)
 		},
-		rules...,
+		hijackRules...,
 	)
 }
 
 // Crawl 一次性在巢内执行一组动作：借一只蜘蛛（可选挂监听）→ 顺序跑完
 // actions → 自动归还。是对最常用"抓一次"场景的一站式封装，等价于
-// BorrowSpider + s.Crawl。hijackCfgs 可选，零个即不监听。
-func (n *Grove[T, S]) Crawl(ctx context.Context, actions []action.Action, hijackCfgs ...config.HijackConfig) ([]action.ActionResult, error) {
+// BorrowSpider + s.Crawl。hijackRules 可选，零个即不监听。
+func (n *Grove[T, S]) Crawl(ctx context.Context, actions []action.Action, hijackRules ...hijack.HijackRule) ([]action.ActionResult, error) {
 	var results []action.ActionResult
 	err := n.BorrowSpider(func(s S) error {
 		var err error
 		results, err = s.Crawl(ctx, actions)
 		return err
-	}, hijackCfgs...)
+	}, hijackRules...)
 	return results, err
 }
 
 // CrawlConcurrent 一次性在巢内并发执行多组动作：借一只蜘蛛（可选挂监听），
 // 把各组分别委托给该蜘蛛内不同的网并发执行、每组独占一张页面，跑完自动归还。
-// 所有并发网共享同一套可选监听（同一只蜘蛛的一次 WithHijack 窗口）。hijackCfgs 可选。
-func (n *Grove[T, S]) CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action, hijackCfgs ...config.HijackConfig) ([][]action.ActionResult, error) {
+// 所有并发网共享同一套可选监听（同一只蜘蛛的一次 WithHijack 窗口）。hijackRules 可选。
+func (n *Grove[T, S]) CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action, hijackRules ...hijack.HijackRule) ([][]action.ActionResult, error) {
 	var results [][]action.ActionResult
 	err := n.BorrowSpider(func(s S) error {
 		var err error
 		results, err = s.CrawlConcurrent(ctx, actionGroups)
 		return err
-	}, hijackCfgs...)
+	}, hijackRules...)
 	return results, err
 }

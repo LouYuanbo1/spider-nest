@@ -14,9 +14,9 @@ import (
 	"github.com/LouYuanbo1/spider-nest/agent"
 	"github.com/LouYuanbo1/spider-nest/agent/mnemo/fs"
 	"github.com/LouYuanbo1/spider-nest/config"
-	"github.com/LouYuanbo1/spider-nest/provider"
 	"github.com/LouYuanbo1/spider-nest/server"
 	"github.com/LouYuanbo1/spider-nest/session"
+	"github.com/LouYuanbo1/spider-nest/session/provider"
 	"github.com/LouYuanbo1/spider-nest/spider"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 

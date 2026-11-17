@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LouYuanbo1/spider-nest/provider"
+	"github.com/LouYuanbo1/spider-nest/session/provider"
 	"github.com/LouYuanbo1/spider-nest/web"
 )
 
