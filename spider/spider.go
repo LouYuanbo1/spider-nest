@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/LouYuanbo1/spider-nest/action"
-	"github.com/LouYuanbo1/spider-nest/spider/hijack"
+	"github.com/LouYuanbo1/spider-nest/hijack"
 	"github.com/LouYuanbo1/spider-nest/web"
 )
 

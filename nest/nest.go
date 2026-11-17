@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/LouYuanbo1/spider-nest/action"
-	"github.com/LouYuanbo1/spider-nest/config"
+	"github.com/LouYuanbo1/spider-nest/hijack"
 	"github.com/LouYuanbo1/spider-nest/spider"
 )
 
@@ -42,13 +42,13 @@ type Colony[T any, S NestSpider[T]] interface {
 	Nest[T, S]
 	// BorrowSpider 借用一只蜘蛛执行 fn，并在结束后自动归还（无论 fn 正常返回
 	// 还是 panic，蜘蛛都会被放回巢中供复用，避免"借了不还"导致池占满）。
-	BorrowSpider(fn func(S) error, hijackCfgs ...config.HijackConfig) error
+	BorrowSpider(fn func(S) error, hijackRules ...hijack.HijackRule) error
 	// Crawl 一次性在池内执行一组动作：借一只蜘蛛（可选挂监听）→ 顺序跑完
-	// actions → 自动归还。hijackCfgs 可选，零个即不监听。
-	Crawl(ctx context.Context, actions []action.Action, hijackCfgs ...config.HijackConfig) ([]action.ActionResult, error)
+	// actions → 自动归还。hijackRules 可选，零个即不监听。
+	Crawl(ctx context.Context, actions []action.Action, hijackRules ...hijack.HijackRule) ([]action.ActionResult, error)
 	// CrawlConcurrent 一次性在池内并发执行多组动作：借一只蜘蛛（可选挂监听），
-	// 把各组分别委托给该蜘蛛内不同的网并发执行，跑完自动归还。hijackCfgs 可选。
-	CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action, hijackCfgs ...config.HijackConfig) ([][]action.ActionResult, error)
+	// 把各组分别委托给该蜘蛛内不同的网并发执行，跑完自动归还。hijackRules 可选。
+	CrawlConcurrent(ctx context.Context, actionGroups [][]action.Action, hijackRules ...hijack.HijackRule) ([][]action.ActionResult, error)
 }
 
 // IdlePicker 是"余量感知巢"的窄接口：在 Nest 生命周期契约之上，再暴露原子化的

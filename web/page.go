@@ -3,21 +3,25 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/LouYuanbo1/spider-nest/action"
+	"github.com/LouYuanbo1/spider-nest/hijack"
 	"github.com/go-rod/rod"
 )
 
-// Page 网：蜘蛛织出的网，持有并操作单张页面（轻量单位）。
-// Spider 只持有浏览器，把抓取任务委托给一张张网去执行。
+var _ Web = (*Page)(nil)
+
+// Spider 只持有浏览器，把抓取任务委托给一张张网页去执行。
 type Page struct {
 	page      *rod.Page
 	humanize  bool
 	opTimeout time.Duration
 	broken    bool // 已标记为失效（执行出错时探活判定），归还时据此销毁重建
+	logger    *slog.Logger
 }
 
 // Option 网选项
@@ -25,16 +29,20 @@ type Option func(*Page)
 
 // WithHumanize 是否在动作中插入随机人类化延迟。
 func WithHumanize(b bool) Option {
-	return func(w *Page) { w.humanize = b }
+	return func(p *Page) { p.humanize = b }
 }
 
 // WithOpTimeout 设置单个动作的超时时间。
 func WithOpTimeout(d time.Duration) Option {
-	return func(w *Page) { w.opTimeout = d }
+	return func(p *Page) { p.opTimeout = d }
 }
 
 func (p *Page) OpTimeout() time.Duration {
 	return p.opTimeout
+}
+
+func (p *Page) WithLogger(logger *slog.Logger) Option {
+	return func(p *Page) { p.logger = logger }
 }
 
 // IsActive 判断网所持页面是否仍然可用（未关闭/崩溃）。
@@ -69,11 +77,15 @@ func (p *Page) ClosePage() {
 // Spider 只持有浏览器并把任务委托给网执行；需要在网上设置人类化与超时等
 // 行为时通过 Option 注入。
 func New(page *rod.Page, opts ...Option) *Page {
-	w := &Page{page: page, opTimeout: 30 * time.Second}
-	for _, o := range opts {
-		o(w)
+	p := &Page{
+		page:      page,
+		opTimeout: 30 * time.Second,
+		logger:    slog.Default().With("component", "web"),
 	}
-	return w
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 func (p *Page) timeoutWrapper[T action.Action](
@@ -164,9 +176,32 @@ func (p *Page) RunAction(ctx context.Context, a action.Action) (action.ActionRes
 	return p.ActionResult(ctx, actionName, value, artifact, effective), nil
 }
 
+// WithHijack 在网持有的页面上挂起一套 page 级拦截，fn 结束即自动撤除。
+// 拦截规则为可选变参：规则为空时 fn 原样执行（不启用 Fetch 域、不关缓存）。
+// 回调 fn 在前（与 Spider.WithHijack 的 fn 在前约定对齐），意在让 fn 内部任意多轮
+// 操作共享同一套监听窗口——这正是它区别于 RunActions"一次调用绑一套"的地方：
+// RunActions 每调一次就重建/销毁一次 router，而 WithHijack 把 router 生命周期
+// 收敛到 fn 的作用域上，创建一次、结束即撤，无需调用方锁控制或手动 Stop。
+//
+// fn 会拿到这张网自身，方便把"挂监听 + 紧接着的动作"显式绑在同一窗口内。
+// 注意：go-rod 的 Router 一旦 Run 后不应再 Add/Remove handler（源码自带此约束），
+// 故规则在 fn 开头一次性注入，fn 内不要试图动态改规则。
+func (p *Page) WithHijack(fn func(Web) error, rules ...hijack.HijackRule) error {
+	if len(rules) != 0 {
+		router, err := hijack.EnableRouter(p.page, rules, p.logger)
+		if err != nil {
+			return err
+		}
+		go router.Run()
+		defer router.Stop()
+	}
+	return fn(p)
+}
+
 // RunActions 在网持有的页面上依次执行一系列动作，并返回每步动作的结构化结果。
 // 它是网对外暴露的总入口：Spider 拿到一张网后，把整组任务直接委托给
 // RunActions 执行，执行异常时返回出错前已成功产生的部分结果与错误。
+// 本方法只做执行、不承载监听；需要监听时用 WithHijack 包住它即可。
 func (p *Page) RunActions(ctx context.Context, actions []action.Action) ([]action.ActionResult, error) {
 	results := make([]action.ActionResult, 0, len(actions))
 	for _, a := range actions {
