@@ -35,10 +35,11 @@ func NewNestProvider[T any, S nest.NestSpider[T]](o *nest.Orchard[T, S]) *NestPr
 }
 
 // NewNestFromConfig 按容量配置 + 蜘蛛工厂直接构造"本地 Nest 后端"的 WebProvider，
-// 供各入口（cmd/server、cmd/ai）少走一步无缝接入。
+// 供各入口（cmd/server、cmd/ai）少走一步无缝接入。create 接收果园分配的创建序号
+// seq（0 基递增、进程重启归零），调用方可据此派生每只蜘蛛各自的配置。
 func NewNestFromConfig[T any, S nest.NestSpider[T]](
 	cfg config.NestConfig,
-	create func() (S, error),
+	create func(seq int) (S, error),
 ) (*NestProvider[T, S], error) {
 	o, err := nest.NewOrchardFromConfig(cfg, create)
 	if err != nil {

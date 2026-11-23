@@ -37,11 +37,12 @@ var ErrOrchardClosed = errors.New("orchard: 果园已关闭")
 
 type Orchard[T any, S NestSpider[T]] struct {
 	logger *slog.Logger
-	create func() (S, error) // 建蜘蛛工厂：由调用方按具体类型与配置提供
+	create func(seq int) (S, error) // 建蜘蛛工厂：seq 为池分配的创建序号
 
 	mu       sync.Mutex
 	idle     *list.List    // 空闲队列：当前在池中可复用的活动蜘蛛（FIFO 复用）
 	live     int           // 已物化的蜘蛛总数 = 空闲成员数 + 借出中数
+	created  int           // 已分配的创建序号（锁内递增，保证并发唯一单调）
 	capacity int           // 并发上限（spiderSize）
 	closed   bool          // 已关闭：拒绝再借出，唤醒所有阻塞中的等待者
 	notify   chan struct{} // 广播唤醒通道：每次状态变更后关闭重建用于唤醒等待者
@@ -49,13 +50,15 @@ type Orchard[T any, S NestSpider[T]] struct {
 
 // NewOrchard 创建一座果园：
 //   - spiderSize：园内蜘蛛数（并发上限）；
-//   - create：按具体指针类型 S 创建蜘蛛的工厂（如返回 *spider.Weaver）。
+//   - create：按具体指针类型 S 创建蜘蛛的工厂（如返回 *spider.Weaver）。create
+//     收到一个 seq（本池分配的创建序号：0 基递增、并发唯一、进程重启归零），
+//     可据此自行派生配置——Orchard 不持有、也不关心蜘蛛配置。
 //     S 的形状由约束 *T 锁死为指针，故调用方传 create 时 T 会被自动推断。
 //
 // 起初 live=0（一座空园）：蜘蛛按需惰性启动，求而未得时才在 lock 内原子预留一个
-// 名额后锁外 create() 新建。能否新建以 live < capacity 为判据——上限永远被尊重，
-// live 同时可当作园的即时占用观测值。
-func NewOrchard[T any, S NestSpider[T]](spiderSize int, create func() (S, error)) (*Orchard[T, S], error) {
+// 名额后锁外 create(seq) 新建——seq 在同一把锁内保留，保证并发新建时序号唯一。
+// 能否新建以 live < capacity 为判据——上限永远被尊重，live 同时可当作园的即时占用观测值。
+func NewOrchard[T any, S NestSpider[T]](spiderSize int, create func(seq int) (S, error)) (*Orchard[T, S], error) {
 	if spiderSize <= 0 {
 		return nil, errors.New("spiderSize 必须大于 0")
 	}
@@ -74,7 +77,7 @@ func NewOrchard[T any, S NestSpider[T]](spiderSize int, create func() (S, error)
 
 // NewOrchardFromConfig 按 config.NestConfig 创建一座果园：等价于
 // NewOrchard(cfg.MaxSpiders, create)，供已持有 NestConfig 的调用方驱动园容量。
-func NewOrchardFromConfig[T any, S NestSpider[T]](cfg config.NestConfig, create func() (S, error)) (*Orchard[T, S], error) {
+func NewOrchardFromConfig[T any, S NestSpider[T]](cfg config.NestConfig, create func(seq int) (S, error)) (*Orchard[T, S], error) {
 	return NewOrchard(cfg.SpiderPoolLimit, create)
 }
 
@@ -131,9 +134,11 @@ func (o *Orchard[T, S]) AcquireIf(ctx context.Context, predicate func(S) bool) (
 		//    都在锁内原子完成，杜绝并发下越过 capacity 的过度新建。
 		if o.live < o.capacity {
 			o.live++
+			seq := o.created
+			o.created++
 			o.mu.Unlock()
 
-			created, err := o.create()
+			created, err := o.create(seq)
 			if err != nil {
 				o.mu.Lock()
 				o.live-- // 创建失败，把名额还回并发余量，避免容量泄漏

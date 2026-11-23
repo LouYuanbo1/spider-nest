@@ -9,6 +9,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 
 	"github.com/LouYuanbo1/spider-nest/config"
@@ -36,8 +37,13 @@ func main() {
 	if appcfg.Nest != nil && appcfg.Nest.SpiderPoolLimit > 0 {
 		nestConfig.SpiderPoolLimit = appcfg.Nest.SpiderPoolLimit
 	}
-	res, err := provider.NewNestFromConfig(nestConfig, func() (*spider.Weaver, error) {
-		s, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
+	res, err := provider.NewNestFromConfig(nestConfig, func(seq int) (*spider.Weaver, error) {
+		// 每只蜘蛛独立 profile 目录 + 随机调试端口：避免多浏览器进程共享
+		// user_data_dir（Chrome 单例锁）与固定 remote-debugging-port 互相撞车。
+		sc := *appcfg.Spider
+		sc.UserDataDir = fmt.Sprintf("user_data/browser_%d", seq)
+		sc.BasicRemoteDebuggingPort = 0 // 0 = 由 Chrome/launcher 自动分配空闲端口
+		s, err := spider.NewWeaver(spider.WithConfig(&sc))
 		if err != nil {
 			return nil, err
 		}

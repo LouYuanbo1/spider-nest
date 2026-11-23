@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/LouYuanbo1/spider-nest/action"
 	"github.com/LouYuanbo1/spider-nest/config"
@@ -30,7 +31,9 @@ var _ Colony[spider.Weaver, *spider.Weaver] = (*Grove[spider.Weaver, *spider.Wea
 //     启停 Chrome 的开销。
 //
 // 配置归属：Grove 只管蜘蛛池生命周期，**不持有蜘蛛配置**。蜘蛛按何种配置创建，
-// 完全由 create 工厂决定（调用方可闭包捕获自己的配置）——谁会建蜘蛛，谁给配置。
+// 完全由 create 工厂决定（调用方可通过 seq 与闭包自行派生配置）——谁会建蜘蛛，
+// 谁给配置。seq 是本池分配的创建序号：0 基递增、进程重启归零、并发下唯一；
+// 失效重建的蜘蛛会取得新序号（"序列号"语义，不复用旧配置对象）。
 //
 // 每只蜘蛛独占一个 *rod.Browser（独立 Chrome 进程），蜘蛛内部的页面池再进一步
 // 把并发 tab 收敛到各自的进程中，扩展性与隔离性兼具。
@@ -40,20 +43,22 @@ var _ Colony[spider.Weaver, *spider.Weaver] = (*Grove[spider.Weaver, *spider.Wea
 // 吞掉通道容量。故用同一思路自行实现。
 type Grove[T any, S NestSpider[T]] struct {
 	logger  *slog.Logger
-	spiders chan S            // 蜘蛛池：每只蜘蛛独占一个浏览器进程
-	create  func() (S, error) // 建蜘蛛工厂：由调用方按具体类型与配置提供
+	spiders chan S                   // 蜘蛛池：每只蜘蛛独占一个浏览器进程
+	create  func(seq int) (S, error) // 建蜘蛛工厂：seq 为池分配的创建序号
+	created atomic.Int32             // 已分配的创建序号（并发递增，唯一单调）
 }
 
 // NewGrove 创建一座小树林：
 //   - spiderSize：林内蜘蛛数（并发上限）；
 //   - create：按具体指针类型 S 创建蜘蛛的工厂（如返回 *spider.Weaver）。create
-//     应自行闭包捕获所需的配置——Grove 不持有、也不关心蜘蛛配置。
+//     收到一个 seq（本池分配的创建序号：0 基递增、并发唯一、进程重启归零），
+//     可据此自行派生配置——Grove 不持有、也不关心蜘蛛配置。
 //     S 的形状由约束 *T 锁死为指针，故调用方传 create 时 T 会被自动推断。
 //
 // 通道预填 spiderSize 个 nil 槽位（借用 rod.Pool 的做法）：空槽表示"可取
 // 出并新建"，因此 Acquire 天然可阻塞——所有槽位都被占用时取不到即等待。
 // 浏览器按需惰性启动，只有被 Acquire 取出并新建的蜘蛛才真正拉起 Chrome。
-func NewGrove[T any, S NestSpider[T]](spiderSize int, create func() (S, error)) (*Grove[T, S], error) {
+func NewGrove[T any, S NestSpider[T]](spiderSize int, create func(seq int) (S, error)) (*Grove[T, S], error) {
 	if spiderSize <= 0 {
 		return nil, errors.New("spiderSize 必须大于 0")
 	}
@@ -76,7 +81,7 @@ func NewGrove[T any, S NestSpider[T]](spiderSize int, create func() (S, error)) 
 // NewGroveFromConfig 按 config.NestConfig 创建一座小树林：等价于
 // NewGrove(cfg.MaxSpiders, create)，供已持有 NestConfig 的调用方（如 Server 管理器）
 // 以同一份配置驱动池容量。MaxSpiders<=0 时返回错误，不静默降级成单飞。
-func NewGroveFromConfig[T any, S NestSpider[T]](cfg config.NestConfig, create func() (S, error)) (*Grove[T, S], error) {
+func NewGroveFromConfig[T any, S NestSpider[T]](cfg config.NestConfig, create func(seq int) (S, error)) (*Grove[T, S], error) {
 	return NewGrove(cfg.SpiderPoolLimit, create)
 }
 
@@ -99,8 +104,10 @@ func (n *Grove[T, S]) AcquireCtx(ctx context.Context) (S, error) {
 		if slot != nil {
 			return slot, nil
 		}
-		// 命中空槽位 → 新建。创建失败必须归还一个空槽位，避免池容量永久减一。
-		created, err := n.create()
+		// 命中空槽位 → 新建，序号由池内原子分配（并发安全）。创建失败必须
+		// 归还一个空槽位，避免池容量永久减一。
+		seq := int(n.created.Add(1) - 1)
+		created, err := n.create(seq)
 		if err != nil {
 			var zero S
 			n.spiders <- zero // 创建失败，归还空槽位，避免容量泄漏
