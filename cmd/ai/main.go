@@ -64,8 +64,15 @@ func main() {
 	// 统一"显式状态句柄"模型：agent 侧 MCP 客户端首次动作前自动借一张网并缓存 web_id，
 	// 之后所有浏览器操作都携带同一 web_id。底层为 Nest（多浏览器池），一用户一网独占
 	// 一个浏览器实例，会话结束 / 进程退出时由 manager 兜底归还。
-	res, err := provider.NewNestFromConfig(nestConfig, func() (*spider.Weaver, error) {
-		s, err := spider.NewWeaver(spider.WithConfig(appcfg.Spider))
+
+	res, err := provider.NewNestFromConfig(nestConfig, func(seq int) (*spider.Weaver, error) {
+		// 每只蜘蛛独立 profile 目录 + 随机调试端口：避免多浏览器进程共享
+		// user_data_dir（Chrome 单例锁）与固定 remote-debugging-port 互相撞车。
+		// seq 由果园/树林池内分配（0 基递增、进程重启归零），并发下安全，无需自己计数。
+		sc := *appcfg.Spider
+		sc.UserDataDir = fmt.Sprintf("user_data/browser_%d", seq)
+		sc.BasicRemoteDebuggingPort = 0 // 0 = 由 Chrome/launcher 自动分配空闲端口
+		s, err := spider.NewWeaver(spider.WithConfig(&sc))
 		if err != nil {
 			return nil, err
 		}

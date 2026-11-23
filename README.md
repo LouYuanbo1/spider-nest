@@ -283,14 +283,22 @@ allResult, err := s.CrawlConcurrent(ctx, groups)
 
 ```go
 import (
+    "fmt"
+
+    "github.com/LouYuanbo1/spider-nest/config"
     "github.com/LouYuanbo1/spider-nest/nest"
     "github.com/LouYuanbo1/spider-nest/spider"
 )
 
 // 3 只蜘蛛（Chrome 进程），每只最多 2 张网。
 // Grove：以有缓冲 chan 当信号量的朴素蜘蛛池；Orchard 提供"按余量挑蜘蛛"的进阶编排。
-n, _ := nest.NewGrove(3, func() (*spider.Weaver, error) {
-    return spider.NewWeaver(spider.WithConfig(cfg.Spider))
+// create 收到的 seq 是池分配的创建序号（0 基递增），可据此派生每只蜘蛛各自的配置
+// （如独立 user_data_dir / 随机调试端口），无需自行管理计数器。
+n, _ := nest.NewGrove(3, func(seq int) (*spider.Weaver, error) {
+    sc := *cfg.Spider
+    sc.UserDataDir = fmt.Sprintf("user_data/browser_%d", seq)
+    sc.BasicRemoteDebuggingPort = 0 // 0 = 自动分配空闲端口，避免多进程撞车
+    return spider.NewWeaver(spider.WithConfig(&sc))
 })
 defer n.Close()
 
@@ -333,6 +341,8 @@ defer resp.Body.Close()
 
 ```go
 import (
+    "fmt"
+
     "github.com/cloudwego/eino-ext/components/model/deepseek"
     "github.com/LouYuanbo1/spider-nest/agent"
     "github.com/LouYuanbo1/spider-nest/config"
@@ -349,8 +359,12 @@ chatModel, _ := deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
 })
 
 // 1) 资源底板：本地 Nest 池（多浏览器）
-res, _ := provider.NewNestFromConfig(config.NestConfig{SpiderPoolLimit: 1},
-    func() (*spider.Weaver, error) { return spider.NewWeaver(spider.WithConfig(cfg.Spider)) })
+res, _ := provider.NewNestFromConfig(config.NestConfig{SpiderPoolLimit: 1}, func(seq int) (*spider.Weaver, error) {
+    sc := *cfg.Spider
+    sc.UserDataDir = fmt.Sprintf("user_data/browser_%d", seq)
+    sc.BasicRemoteDebuggingPort = 0 // 自动分配端口，避免多浏览器撞车
+    return spider.NewWeaver(spider.WithConfig(&sc))
+})
 
 // 2) 会话管理器（Provider 之上）
 mgr, _ := session.New(res, cfg.Spider.OperationTimeout)
